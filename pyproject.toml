@@ -22,4 +22,7 @@ segmentation = [
 ]
 
 [tool.setuptools]
-packages = ["thymus_quant"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
