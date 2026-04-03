@@ -4,9 +4,8 @@ Recommended user import::
 
     import thymus_quant as thyq
 
-This package skeleton intentionally exposes a small public API surface:
+This package exposes a small public API surface:
 `load_segmentor`, `segment_trq`, `quantify`, `analyze`, and `analyze_many`.
-The implementation bodies are left for a separate agent.
 """
 
 from .api import (

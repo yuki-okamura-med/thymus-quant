@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import os
+import threading
+from pathlib import Path
 from typing import Literal, Sequence, overload
 
 import nibabel as nib
@@ -30,6 +32,10 @@ from .results import (
 from .segmentors import ImageInput, LoadedSegmentor, SegmentationResult, SegmentorInfo, SegmentorMember
 
 
+_SEGMENTOR_CACHE: dict[tuple, LoadedSegmentor] = {}
+_SEGMENTOR_CACHE_LOCK = threading.Lock()
+
+
 def list_methods() -> tuple[MethodName, ...]:
     return ("okamura", "chaunzwa")
 
@@ -44,7 +50,15 @@ def list_segmentors() -> dict[str, SegmentorInfo]:
             is_ensemble=True,
             available_members=available,
             selected_members=available,
-        )
+        ),
+        "heuristic_trq": SegmentorInfo(
+            name="heuristic_trq",
+            repo_id=None,
+            architecture="heuristic",
+            is_ensemble=False,
+            available_members=("single",),
+            selected_members=("single",),
+        ),
     }
 
 
@@ -61,6 +75,40 @@ def _resolve_members(members: Sequence[int | str] | None, default: Sequence[str]
     return tuple(out)
 
 
+def _find_local_trqseg_v1_repo() -> str | None:
+    env_path = os.environ.get("THYQ_TRQSEG_V1_LOCAL_REPO")
+    candidates = []
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.extend(
+        [
+            Path("/mnt/w/repos/TRQseg-v1"),
+            Path("/mnt/w/repos/trqseg-v1"),
+        ]
+    )
+    for c in candidates:
+        if c.exists() and c.is_dir():
+            return str(c)
+    return None
+
+
+def _segmentor_cache_key(
+    info: SegmentorInfo,
+    requested_members: tuple[str, ...],
+    local_files_only: bool,
+    device: str,
+) -> tuple:
+    return (
+        info.name,
+        info.repo_id,
+        info.resolved_revision,
+        requested_members,
+        bool(local_files_only),
+        info.cache_dir,
+        device,
+    )
+
+
 def load_segmentor(
     segmentor: str = "okamura_trq_v1",
     *,
@@ -71,13 +119,13 @@ def load_segmentor(
     local_files_only: bool = False,
     device: str = "auto",
 ) -> LoadedSegmentor:
-    _ = (cache_dir, local_files_only)
     reg = list_segmentors()
     info = reg.get(segmentor)
     if info is None:
         info = SegmentorInfo(name=segmentor, repo_id=segmentor, architecture="unknown", is_ensemble=True)
 
-    requested = _resolve_members(members, info.available_members or tuple(f"fold-{i}" for i in range(5)))
+    default_members = info.available_members or tuple(f"fold-{i}" for i in range(5))
+    requested = _resolve_members(members, default_members)
     if ensemble is False and requested:
         requested = (requested[0],)
 
@@ -92,8 +140,42 @@ def load_segmentor(
         selected_members=requested,
         cache_dir=None if cache_dir is None else str(cache_dir),
     )
-    mems = tuple(SegmentorMember(member_id=m, relative_path=f"weights/{m}/model.safetensors", local_path=None, revision=revision) for m in requested)
-    return LoadedSegmentor(info=info, members=mems, device=device)
+
+    cache_key = _segmentor_cache_key(info, requested, local_files_only, device)
+    with _SEGMENTOR_CACHE_LOCK:
+        cached = _SEGMENTOR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    local_repo = _find_local_trqseg_v1_repo() if info.repo_id == "yuki-okamura-hf/TRQseg-v1" else None
+
+    mems = []
+    for m in requested:
+        rel = f"weights/{m}/model.safetensors"
+        local_path = None
+        if local_repo is not None:
+            candidate = Path(local_repo) / rel
+            if candidate.exists():
+                local_path = str(candidate)
+        mems.append(
+            SegmentorMember(
+                member_id=m,
+                relative_path=rel,
+                local_path=local_path,
+                revision=revision,
+            )
+        )
+
+    loaded = LoadedSegmentor(
+        info=info,
+        members=tuple(mems),
+        device=device,
+        local_files_only=local_files_only,
+    )
+
+    with _SEGMENTOR_CACHE_LOCK:
+        _SEGMENTOR_CACHE[cache_key] = loaded
+    return loaded
 
 
 def segment_trq(
@@ -317,9 +399,9 @@ def quantify(segmentation: SegmentationResult, *, method: MethodName, options: O
 
     # chaunzwa
     opt = options if isinstance(options, ChaunzwaOptions) else ChaunzwaOptions()
-    mask = np.asarray(segmentation.trq_mask)
-    if mask is None:
+    if segmentation.trq_mask is None:
         raise ValueError("segmentation.trq_mask is required")
+    mask = np.asarray(segmentation.trq_mask)
     # obtain ct from first member raw_output if present, else synthetic default
     ct = None
     img = None
@@ -412,7 +494,10 @@ def analyze(image: ImageInput, *, method: MethodName, study_id: str | None = Non
     img = image if isinstance(image, nib.spatialimages.SpatialImage) else nib.load(str(image))
     ct = np.asarray(img.get_fdata(), dtype=float)
     for m in seg.members:
-        m.raw_output = {"ct_array": ct, "ct_image": img}
+        base = m.raw_output if isinstance(m.raw_output, dict) else {}
+        base["ct_array"] = ct
+        base["ct_image"] = img
+        m.raw_output = base
 
     return quantify(seg, method=method, options=options, detail=detail)
 

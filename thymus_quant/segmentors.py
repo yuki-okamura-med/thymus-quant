@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Sequence, TypeAlias, Union
 
@@ -20,7 +21,7 @@ def _load_image(image: ImageInput) -> nib.spatialimages.SpatialImage:
 
 
 def _simple_trq_segmentation(ct: np.ndarray) -> np.ndarray:
-    # lightweight fallback segmentation (no DL dependency)
+    """Lightweight fallback segmentation when NN backend is unavailable."""
     finite = np.isfinite(ct)
     mask = finite & (ct > -250) & (ct < 200)
     if mask.sum() == 0:
@@ -36,6 +37,12 @@ def _simple_trq_segmentation(ct: np.ndarray) -> np.ndarray:
     roi = np.zeros_like(mask, dtype=bool)
     roi[x0:x1, :y1, z0:z1] = True
     return (mask & roi).astype(np.uint8)
+
+
+def _upsample_label_to_xyz(y_zxy: np.ndarray, x_size: int, y_size: int) -> np.ndarray:
+    y_up = np.repeat(np.repeat(y_zxy, 2, axis=1), 2, axis=2)
+    y_up = y_up[:, :x_size, :y_size]
+    return y_up.transpose(1, 2, 0)
 
 
 @dataclass(slots=True)
@@ -64,6 +71,100 @@ class LoadedSegmentor:
     info: SegmentorInfo
     members: tuple[SegmentorMember, ...] = ()
     device: str = "auto"
+    local_files_only: bool = False
+    _models: dict[str, Any] = field(default_factory=dict, repr=False)
+    _runtime_device: str | None = field(default=None, repr=False)
+    _load_lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def _resolve_device(self):
+        import torch
+
+        if self.device == "auto":
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        return self.device
+
+    def _resolve_weight_path(self, member: SegmentorMember) -> str:
+        if member.local_path and os.path.exists(member.local_path):
+            return member.local_path
+
+        if not self.info.repo_id:
+            raise FileNotFoundError(
+                f"No local weight found for member '{member.member_id}', and repo_id is not set."
+            )
+
+        try:
+            from huggingface_hub import hf_hub_download
+        except Exception as e:  # pragma: no cover - dependency/runtime environment dependent
+            raise RuntimeError(
+                "huggingface_hub is required to download TRQseg-v1 weights when local files are not found."
+            ) from e
+
+        filename = member.relative_path or f"weights/{member.member_id}/model.safetensors"
+        path = hf_hub_download(
+            repo_id=self.info.repo_id,
+            filename=filename,
+            revision=self.info.resolved_revision,
+            cache_dir=self.info.cache_dir,
+            local_files_only=self.local_files_only,
+        )
+        member.local_path = path
+        return path
+
+    def _ensure_models_loaded(self) -> None:
+        if self._models:
+            return
+
+        with self._load_lock:
+            if self._models:
+                return
+
+            # heuristic-only segmentor
+            if self.info.repo_id is None or self.info.name == "heuristic_trq":
+                self._runtime_device = "cpu"
+                return
+
+            try:
+                import torch
+                import torchvision
+                from safetensors.torch import load_file
+            except Exception as e:  # pragma: no cover - dependency/runtime environment dependent
+                raise RuntimeError(
+                    "NN segmentation requires torch, torchvision, and safetensors."
+                ) from e
+
+            runtime_device = self._resolve_device()
+            models: dict[str, Any] = {}
+
+            target_members = self.members or (SegmentorMember(member_id="fold-0"),)
+            for m in target_members:
+                weight_path = self._resolve_weight_path(m)
+
+                model = torchvision.models.segmentation.deeplabv3_resnet50(
+                    weights=None,
+                    weights_backbone=None,
+                    num_classes=3,
+                    aux_loss=None,
+                )
+                state = load_file(str(weight_path))
+                model.load_state_dict(state)
+                model.to(runtime_device)
+                model.eval()
+                models[m.member_id] = model
+
+            self._models = models
+            self._runtime_device = runtime_device
+
+    def _predict_logits(self, model: Any, x_np: np.ndarray, split_size: int = 64) -> np.ndarray:
+        import torch
+
+        device = self._runtime_device or self._resolve_device()
+        batch = torch.from_numpy(x_np.astype(np.float32)).to(device)
+        chunks = torch.split(batch, split_size)
+        outs = []
+        with torch.no_grad():
+            for c in chunks:
+                outs.append(model(c)["out"].detach().cpu().numpy())
+        return np.concatenate(outs, axis=0)
 
     def segment_trq(
         self,
@@ -72,14 +173,58 @@ class LoadedSegmentor:
         study_id: str | None = None,
     ) -> "SegmentationResult":
         img = _load_image(image)
-        ct = np.asarray(img.get_fdata(), dtype=float)
+        ct = np.asarray(img.get_fdata(), dtype=np.float32)
+
+        self._ensure_models_loaded()
 
         member_outputs: list[SegmentationMember] = []
-        for m in self.members or (SegmentorMember(member_id="single"),):
-            trq = _simple_trq_segmentation(ct)
-            member_outputs.append(SegmentationMember(member_id=m.member_id, trq_mask=trq, airway_mask=None, raw_output=None))
 
-        fused = member_outputs[0].trq_mask if len(member_outputs) == 1 else (np.mean(np.stack([x.trq_mask for x in member_outputs], axis=0), axis=0) >= 0.5).astype(np.uint8)
+        # NN path
+        if self._models:
+            x = ct[::2, ::2, :].transpose(2, 0, 1)
+            x = np.clip(x, -1500, 1500) / 1500.0
+            x = np.stack([x, x, x], axis=1).astype(np.float32)
+
+            for m in self.members:
+                model = self._models.get(m.member_id)
+                if model is None:
+                    continue
+
+                logits = self._predict_logits(model, x)
+                pred_ds = np.argmax(logits, axis=1).astype(np.uint8)
+                pred_xyz = _upsample_label_to_xyz(pred_ds, ct.shape[0], ct.shape[1])
+
+                trq = (pred_xyz == 2).astype(np.uint8)
+                airway = (pred_xyz == 1).astype(np.uint8)
+
+                member_outputs.append(
+                    SegmentationMember(
+                        member_id=m.member_id,
+                        trq_mask=trq,
+                        airway_mask=airway,
+                        raw_output={"backend": "hf_trqseg_v1"},
+                    )
+                )
+
+        # fallback path (heuristic)
+        if not member_outputs:
+            for m in self.members or (SegmentorMember(member_id="single"),):
+                trq = _simple_trq_segmentation(ct)
+                member_outputs.append(
+                    SegmentationMember(
+                        member_id=m.member_id,
+                        trq_mask=trq,
+                        airway_mask=None,
+                        raw_output={"backend": "heuristic"},
+                    )
+                )
+
+        fused = (
+            member_outputs[0].trq_mask
+            if len(member_outputs) == 1
+            else (np.mean(np.stack([x.trq_mask for x in member_outputs], axis=0), axis=0) >= 0.5).astype(np.uint8)
+        )
+
         return SegmentationResult(
             study_id=study_id,
             segmentor=self.info,
@@ -110,7 +255,9 @@ class SegmentationResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "study_id": self.study_id,
-            "segmentor": None if self.segmentor is None else {
+            "segmentor": None
+            if self.segmentor is None
+            else {
                 "name": self.segmentor.name,
                 "repo_id": self.segmentor.repo_id,
                 "resolved_revision": self.segmentor.resolved_revision,
