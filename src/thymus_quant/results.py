@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+"""Result container classes for :mod:`thymus_quant`.
+
+This module defines:
+- study-level result objects (Okamura / Chaunzwa)
+- batch-level result objects
+- lightweight metadata and QC records
+- convenience exporters (`to_dict`, `to_record`, `to_frame`)
+"""
+
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Sequence, TypeAlias
 
 if TYPE_CHECKING:
     import pandas as pd
+
     from .segmentors import SegmentationResult
 
 MethodName: TypeAlias = Literal["okamura", "chaunzwa"]
@@ -15,15 +25,24 @@ OnError: TypeAlias = Literal["raise", "record", "skip"]
 
 
 def _df(records: list[dict[str, Any]]):
+    """Build a pandas DataFrame from flat records.
+
+    Raises
+    ------
+    ImportError
+        If pandas is not installed.
+    """
     try:
         import pandas as pd
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - optional dependency path
         raise ImportError("pandas is required for to_frame()") from e
     return pd.DataFrame.from_records(records)
 
 
 @dataclass(slots=True)
 class ResultMeta:
+    """Common metadata attached to a study-level analysis result."""
+
     study_id: str | None = None
     method: MethodName | None = None
     detail: DetailLevel = "summary"
@@ -37,6 +56,8 @@ class ResultMeta:
 
 @dataclass(slots=True)
 class BatchErrorRecord:
+    """Per-item error record returned by ``analyze_many(..., on_error='record')``."""
+
     input_source: str | None = None
     study_id: str | None = None
     error_type: str | None = None
@@ -45,6 +66,8 @@ class BatchErrorRecord:
 
 @dataclass(slots=True)
 class AnalysisResultBase(ABC):
+    """Abstract base class shared by all study-level result objects."""
+
     study_id: str | None = None
     method: MethodName | None = None
     meta: ResultMeta | None = None
@@ -52,19 +75,24 @@ class AnalysisResultBase(ABC):
 
     @abstractmethod
     def to_dict(self) -> dict[str, Any]:
+        """Return nested JSON-friendly representation."""
         raise NotImplementedError
 
     @abstractmethod
     def to_record(self) -> dict[str, Any]:
+        """Return flat one-study record for tabular export."""
         raise NotImplementedError
 
     @abstractmethod
     def to_frame(self) -> "pd.DataFrame":
+        """Return one-row pandas DataFrame summary."""
         raise NotImplementedError
 
 
 @dataclass(slots=True)
 class OkamuraQC:
+    """Quality-control summary for the Okamura method."""
+
     status: QCStatus = "not_available"
     paper_criteria_met: bool | None = None
     flags: Sequence[str] = field(default_factory=tuple)
@@ -76,6 +104,8 @@ class OkamuraQC:
 
 @dataclass(slots=True)
 class OkamuraMemberResult:
+    """Per-member quantitative result for ensemble-based Okamura analysis."""
+
     member_id: str
     valid: bool = True
     trq_hu_mode: float | None = None
@@ -88,6 +118,8 @@ class OkamuraMemberResult:
 
 @dataclass(slots=True)
 class AnalysisResultOkamura(AnalysisResultBase):
+    """Study-level output for the Okamura method."""
+
     trq_hu_mode: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
@@ -95,7 +127,8 @@ class AnalysisResultOkamura(AnalysisResultBase):
     members: Sequence[OkamuraMemberResult] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:
-        d = {
+        """Return nested representation with optional member-level payload."""
+        return {
             "study_id": self.study_id,
             "method": self.method,
             "meta": None if self.meta is None else asdict(self.meta),
@@ -117,9 +150,9 @@ class AnalysisResultOkamura(AnalysisResultBase):
                 for m in self.members
             ],
         }
-        return d
 
     def to_record(self) -> dict[str, Any]:
+        """Return flat study-level table record."""
         return {
             "study_id": self.study_id,
             "method": self.method,
@@ -135,11 +168,14 @@ class AnalysisResultOkamura(AnalysisResultBase):
         }
 
     def to_frame(self) -> "pd.DataFrame":
+        """Return one-row DataFrame."""
         return _df([self.to_record()])
 
 
 @dataclass(slots=True)
 class GMMComponent:
+    """One Gaussian component in a fitted Chaunzwa mixture model."""
+
     component_id: int
     weight: float | None = None
     mu_hu: float | None = None
@@ -150,6 +186,8 @@ class GMMComponent:
 
 @dataclass(slots=True)
 class GaussianMixtureFit:
+    """Fit summary for Chaunzwa GMM modeling."""
+
     n_components: int
     converged: bool | None = None
     n_iter: int | None = None
@@ -161,6 +199,8 @@ class GaussianMixtureFit:
 
 @dataclass(slots=True)
 class PosteriorSummary:
+    """Aggregated posterior mass/volume summaries from Chaunzwa model."""
+
     component_posterior_mass_vox: dict[int, float] = field(default_factory=dict)
     component_posterior_volume_ml: dict[int, float] = field(default_factory=dict)
     tissue_posterior_mass_vox: dict[str, float] = field(default_factory=dict)
@@ -169,6 +209,8 @@ class PosteriorSummary:
 
 @dataclass(slots=True)
 class PosteriorMaps:
+    """Optional voxelwise posterior maps for advanced Chaunzwa inspection."""
+
     component_posteriors: dict[int, Any] = field(default_factory=dict)
     tissue_posteriors: dict[str, Any] = field(default_factory=dict)
     hard_component_labels: Any | None = None
@@ -176,6 +218,8 @@ class PosteriorMaps:
 
 @dataclass(slots=True)
 class AnalysisResultChaunzwa(AnalysisResultBase):
+    """Study-level output for the Chaunzwa method."""
+
     atrq_hu: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
@@ -185,6 +229,7 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
     posterior_maps: PosteriorMaps | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Return nested representation with optional GMM/posterior payload."""
         return {
             "study_id": self.study_id,
             "method": self.method,
@@ -197,7 +242,9 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
             },
             "gmm": None if self.gmm is None else asdict(self.gmm),
             "posterior": None if self.posterior is None else asdict(self.posterior),
-            "posterior_maps": None if self.posterior_maps is None else {
+            "posterior_maps": None
+            if self.posterior_maps is None
+            else {
                 "component_ids": sorted(self.posterior_maps.component_posteriors.keys()),
                 "tissue_keys": sorted(self.posterior_maps.tissue_posteriors.keys()),
                 "has_hard_labels": self.posterior_maps.hard_component_labels is not None,
@@ -205,6 +252,7 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
         }
 
     def to_record(self) -> dict[str, Any]:
+        """Return flat study-level table record."""
         return {
             "study_id": self.study_id,
             "method": self.method,
@@ -219,27 +267,35 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
         }
 
     def to_frame(self) -> "pd.DataFrame":
+        """Return one-row DataFrame."""
         return _df([self.to_record()])
 
 
 @dataclass(slots=True)
 class BatchAnalysisResultBase(ABC):
+    """Abstract base container for batch analysis outputs."""
+
     method: MethodName
     errors: Sequence[BatchErrorRecord] = field(default_factory=tuple)
 
     @abstractmethod
     def to_frame(self) -> "pd.DataFrame":
+        """Return study-level summary table."""
         raise NotImplementedError
 
 
 @dataclass(slots=True)
 class BatchAnalysisResultOkamura(BatchAnalysisResultBase):
+    """Batch output container for Okamura analyses."""
+
     results: Sequence[AnalysisResultOkamura] = field(default_factory=tuple)
 
     def to_frame(self) -> "pd.DataFrame":
+        """Return one row per study."""
         return _df([r.to_record() for r in self.results])
 
     def members_to_frame(self) -> "pd.DataFrame":
+        """Return one row per study-member pair."""
         rows = []
         for r in self.results:
             for m in r.members:
@@ -259,12 +315,16 @@ class BatchAnalysisResultOkamura(BatchAnalysisResultBase):
 
 @dataclass(slots=True)
 class BatchAnalysisResultChaunzwa(BatchAnalysisResultBase):
+    """Batch output container for Chaunzwa analyses."""
+
     results: Sequence[AnalysisResultChaunzwa] = field(default_factory=tuple)
 
     def to_frame(self) -> "pd.DataFrame":
+        """Return one row per study."""
         return _df([r.to_record() for r in self.results])
 
     def components_to_frame(self) -> "pd.DataFrame":
+        """Return one row per study-component pair."""
         rows = []
         for r in self.results:
             if r.gmm is None:

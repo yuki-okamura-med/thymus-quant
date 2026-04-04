@@ -1,5 +1,18 @@
 from __future__ import annotations
 
+"""Top-level public API for :mod:`thymus_quant`.
+
+This module intentionally keeps user-facing entry points compact:
+- `load_segmentor`
+- `segment_trq`
+- `quantify`
+- `analyze`
+- `analyze_many`
+
+Method-specific quantification logic is split into private helpers
+(`_quantify_okamura`, `_quantify_chaunzwa`) to keep control flow explicit.
+"""
+
 import math
 import os
 import threading
@@ -37,10 +50,12 @@ _SEGMENTOR_CACHE_LOCK = threading.Lock()
 
 
 def list_methods() -> tuple[MethodName, ...]:
+    """Return supported quantification method names."""
     return ("okamura", "chaunzwa")
 
 
 def list_segmentors() -> dict[str, SegmentorInfo]:
+    """Return built-in segmentor registry."""
     available = tuple(f"fold-{i}" for i in range(5))
     return {
         "okamura_trq_v1": SegmentorInfo(
@@ -63,6 +78,7 @@ def list_segmentors() -> dict[str, SegmentorInfo]:
 
 
 def _resolve_members(members: Sequence[int | str] | None, default: Sequence[str]) -> tuple[str, ...]:
+    """Normalize member selector to canonical fold names."""
     if members is None:
         return tuple(default)
     out = []
@@ -76,6 +92,7 @@ def _resolve_members(members: Sequence[int | str] | None, default: Sequence[str]
 
 
 def _find_local_trqseg_v1_repo() -> str | None:
+    """Find local mirror path for TRQseg-v1 weights if present."""
     env_path = os.environ.get("THYQ_TRQSEG_V1_LOCAL_REPO")
     candidates = []
     if env_path:
@@ -98,6 +115,7 @@ def _segmentor_cache_key(
     local_files_only: bool,
     device: str,
 ) -> tuple:
+    """Build cache key for loaded segmentor reuse."""
     return (
         info.name,
         info.repo_id,
@@ -119,6 +137,13 @@ def load_segmentor(
     local_files_only: bool = False,
     device: str = "auto",
 ) -> LoadedSegmentor:
+    """Resolve and return a cached segmentor handle.
+
+    Notes
+    -----
+    A process-level cache prevents duplicate model loading when the same
+    segmentor configuration is requested repeatedly.
+    """
     reg = list_segmentors()
     info = reg.get(segmentor)
     if info is None:
@@ -149,7 +174,7 @@ def load_segmentor(
 
     local_repo = _find_local_trqseg_v1_repo() if info.repo_id == "yuki-okamura-hf/TRQseg-v1" else None
 
-    mems = []
+    members_resolved = []
     for m in requested:
         rel = f"weights/{m}/model.safetensors"
         local_path = None
@@ -157,7 +182,7 @@ def load_segmentor(
             candidate = Path(local_repo) / rel
             if candidate.exists():
                 local_path = str(candidate)
-        mems.append(
+        members_resolved.append(
             SegmentorMember(
                 member_id=m,
                 relative_path=rel,
@@ -168,7 +193,7 @@ def load_segmentor(
 
     loaded = LoadedSegmentor(
         info=info,
-        members=tuple(mems),
+        members=tuple(members_resolved),
         device=device,
         local_files_only=local_files_only,
     )
@@ -186,16 +211,19 @@ def segment_trq(
     revision: str | None = None,
     device: str = "auto",
 ) -> SegmentationResult:
+    """Run TRQ segmentation and return `SegmentationResult`."""
     seg = load_segmentor(segmentor, revision=revision, device=device) if isinstance(segmentor, str) else segmentor
     return seg.segment_trq(image, study_id=study_id)
 
 
 def _voxvol_ml(mask: np.ndarray, img: nib.spatialimages.SpatialImage) -> float:
+    """Convert mask voxel count to mL using image voxel spacing."""
     zoom = img.header.get_zooms()[:3]
     return float((mask > 0).sum() * (zoom[0] * zoom[1] * zoom[2]) / 1000.0)
 
 
 def _mode_and_second_ratio(values: np.ndarray, bins: int = 512) -> tuple[float, float]:
+    """Estimate HU mode and second-peak ratio from a histogram."""
     if values.size == 0:
         return float("nan"), float("nan")
     vmin, vmax = float(np.min(values)), float(np.max(values))
@@ -213,13 +241,15 @@ def _mode_and_second_ratio(values: np.ndarray, bins: int = 512) -> tuple[float, 
 
 
 def _dice(a: np.ndarray, b: np.ndarray) -> float:
-    a = (a > 0)
-    b = (b > 0)
+    """Dice similarity coefficient for binary masks."""
+    a = a > 0
+    b = b > 0
     den = a.sum() + b.sum()
     return 1.0 if den == 0 else float(2.0 * (a & b).sum() / den)
 
 
 def _jsd_from_values(v1: np.ndarray, v2: np.ndarray, bins: int = 300) -> float:
+    """Jensen-Shannon divergence from histogram distributions."""
     lo = float(min(np.min(v1), np.min(v2)))
     hi = float(max(np.max(v1), np.max(v2)))
     if lo == hi:
@@ -238,12 +268,18 @@ def _jsd_from_values(v1: np.ndarray, v2: np.ndarray, bins: int = 300) -> float:
 
 
 def _gaussian_pdf(x: np.ndarray, mu: float, sigma: float) -> np.ndarray:
+    """Gaussian probability density function."""
     sigma = max(float(sigma), 1e-6)
     z = (x - mu) / sigma
     return np.exp(-0.5 * z * z) / (sigma * math.sqrt(2.0 * math.pi))
 
 
-def _fit_gmm_1d(x: np.ndarray, k: int, max_iter: int = 100) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool, int, float]:
+def _fit_gmm_1d(
+    x: np.ndarray,
+    k: int,
+    max_iter: int = 100,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, bool, int, float]:
+    """Fit 1D GMM using basic EM updates."""
     x = x.astype(float)
     n = x.size
     qs = np.linspace(0.1, 0.9, k)
@@ -280,6 +316,7 @@ def _fit_gmm_1d(x: np.ndarray, k: int, max_iter: int = 100) -> tuple[np.ndarray,
 
 
 def _bic_aic(loglik: float, n: int, k: int) -> tuple[float, float]:
+    """Compute BIC and AIC for 1D GMM with k components."""
     p = 3 * k - 1
     bic = -2 * loglik + p * math.log(max(n, 1))
     aic = -2 * loglik + 2 * p
@@ -287,6 +324,7 @@ def _bic_aic(loglik: float, n: int, k: int) -> tuple[float, float]:
 
 
 def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLevel) -> ResultMeta:
+    """Build common metadata object from segmentation context."""
     sinfo = segmentation.segmentor
     return ResultMeta(
         study_id=segmentation.study_id,
@@ -301,108 +339,159 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
     )
 
 
-@overload
-def quantify(segmentation: SegmentationResult, *, method: Literal["okamura"], options: OkamuraOptions | None = None, detail: DetailLevel = "summary") -> AnalysisResultOkamura: ...
+def _extract_member_ct_and_img(member, mask: np.ndarray) -> tuple[np.ndarray, nib.spatialimages.SpatialImage | None]:
+    """Extract CT/context payload attached by `analyze`; fall back if missing."""
+    ct = None
+    img = None
+    if isinstance(member.raw_output, dict):
+        ct = member.raw_output.get("ct_array")
+        img = member.raw_output.get("ct_image")
+    if ct is None:
+        ct = np.where(mask > 0, -30.0, -110.0)
+    return np.asarray(ct), img
 
 
-@overload
-def quantify(segmentation: SegmentationResult, *, method: Literal["chaunzwa"], options: ChaunzwaOptions | None = None, detail: DetailLevel = "summary") -> AnalysisResultChaunzwa: ...
+def _as_summary_member(member: OkamuraMemberResult) -> OkamuraMemberResult:
+    """Drop heavy mask payload for summary-level result export."""
+    return OkamuraMemberResult(
+        member_id=member.member_id,
+        valid=member.valid,
+        trq_hu_mode=member.trq_hu_mode,
+        trq_volume_ml=member.trq_volume_ml,
+        etv_ml=member.etv_ml,
+        second_peak_ratio=member.second_peak_ratio,
+    )
 
 
-def quantify(segmentation: SegmentationResult, *, method: MethodName, options: OkamuraOptions | ChaunzwaOptions | None = None, detail: DetailLevel = "summary") -> AnalysisResultBase:
-    if method == "okamura":
-        opt = options if isinstance(options, OkamuraOptions) else OkamuraOptions()
+def _quantify_okamura(
+    segmentation: SegmentationResult,
+    opt: OkamuraOptions,
+    detail: DetailLevel,
+) -> AnalysisResultOkamura:
+    """Run Okamura quantification from member-level TRQ segmentation."""
+    members = list(segmentation.members) if segmentation.members else []
+    if not members and segmentation.trq_mask is not None:
+        from .segmentors import SegmentationMember
 
-        members = segmentation.members if segmentation.members else []
-        if not members and segmentation.trq_mask is not None:
-            from .segmentors import SegmentationMember
-            members = [SegmentationMember(member_id="single", trq_mask=segmentation.trq_mask)]
+        members = [SegmentationMember(member_id="single", trq_mask=segmentation.trq_mask)]
 
-        # no original CT on SegmentationResult by schema; assume raw_output may carry CT image
-        # fallback: use mask values as proxy if CT unavailable
-        member_results = []
-        modes, vols, etvs, valid_mask = [], [], [], []
-        values_list = []
-        masks = []
-        for m in members:
-            ct = None
-            img = None
-            if isinstance(m.raw_output, dict):
-                ct = m.raw_output.get("ct_array")
-                img = m.raw_output.get("ct_image")
-            mask = np.asarray(m.trq_mask)
-            masks.append(mask)
-            if ct is None:
-                ct = np.where(mask > 0, -30.0, -110.0)
-            vals = np.asarray(ct)[mask > 0]
-            values_list.append(vals)
-            mode, second_ratio = _mode_and_second_ratio(vals)
-            vol = float(mask.sum()) if img is None else _voxvol_ml(mask, img)
-            frac = (mode - opt.aadipose_hu) / (opt.athymic_hu - opt.aadipose_hu)
-            frac = float(np.clip(frac, 0.0, 1.0))
-            etv = frac * vol
-            valid = np.isfinite(mode) and (second_ratio <= opt.second_peak_ratio_threshold)
-            member_results.append(OkamuraMemberResult(member_id=m.member_id, valid=bool(valid), trq_hu_mode=float(mode), trq_volume_ml=float(vol), etv_ml=float(etv), second_peak_ratio=float(second_ratio), trq_mask=(m.trq_mask if detail == "full" else None), airway_mask=(m.airway_mask if detail == "full" else None)))
-            modes.append(float(mode)); vols.append(float(vol)); etvs.append(float(etv)); valid_mask.append(bool(valid))
+    member_results: list[OkamuraMemberResult] = []
+    modes: list[float] = []
+    vols: list[float] = []
+    etvs: list[float] = []
+    valid_mask: list[bool] = []
+    values_list: list[np.ndarray] = []
+    masks: list[np.ndarray] = []
 
-        valid_indices = [i for i, v in enumerate(valid_mask) if v]
-        use_indices = valid_indices if valid_indices else list(range(len(member_results)))
+    for m in members:
+        mask = np.asarray(m.trq_mask)
+        masks.append(mask)
 
-        trq_hu = float(np.median([modes[i] for i in use_indices])) if use_indices else None
-        trq_vol = float(np.median([vols[i] for i in use_indices])) if use_indices else None
-        etv = float(np.median([etvs[i] for i in use_indices])) if use_indices else None
+        ct, img = _extract_member_ct_and_img(m, mask)
+        vals = ct[mask > 0]
+        values_list.append(vals)
 
-        mean_jsd = None
-        mean_dsc = None
-        hu_var = None
-        flags: list[str] = []
-        if len(member_results) >= 2:
-            jsds, dscs = [], []
-            for i in range(len(member_results)):
-                for j in range(i + 1, len(member_results)):
-                    if values_list[i].size and values_list[j].size:
-                        jsds.append(_jsd_from_values(values_list[i], values_list[j]))
-                    dscs.append(_dice(masks[i], masks[j]))
-            mean_jsd = float(np.mean(jsds)) if jsds else None
-            mean_dsc = float(np.mean(dscs)) if dscs else None
-            hu_var = float(np.var([modes[i] for i in use_indices])) if len(use_indices) >= 2 else 0.0
+        mode, second_ratio = _mode_and_second_ratio(vals)
+        vol = float(mask.sum()) if img is None else _voxvol_ml(mask, img)
+        frac = float(np.clip((mode - opt.aadipose_hu) / (opt.athymic_hu - opt.aadipose_hu), 0.0, 1.0))
+        etv = float(frac * vol)
+        valid = bool(np.isfinite(mode) and (second_ratio <= opt.second_peak_ratio_threshold))
 
-        if opt.invalidate_if_any_member_invalid and (not all(valid_mask)):
-            flags.append("invalid_member")
-        if opt.apply_qc:
-            if mean_jsd is not None and mean_jsd >= opt.js_divergence_threshold:
-                flags.append("high_jsd")
-            if mean_dsc is not None and mean_dsc <= opt.pairwise_dsc_threshold:
-                flags.append("low_dsc")
-            if hu_var is not None and hu_var >= opt.hu_variance_threshold:
-                flags.append("high_hu_variance")
-
-        if len(member_results) == 0:
-            status = "not_available"
-            met = None
-        else:
-            met = len(flags) == 0
-            status = "ok" if met else "check"
-
-        qc = OkamuraQC(status=status, paper_criteria_met=met, flags=tuple(flags), mean_pairwise_jsd=mean_jsd, mean_pairwise_dsc=mean_dsc, hu_variance=hu_var, valid_member_count=len(valid_indices))
-        return AnalysisResultOkamura(
-            study_id=segmentation.study_id,
-            method="okamura",
-            meta=_meta(segmentation, "okamura", detail),
-            segmentation=(segmentation if detail == "full" else None),
-            trq_hu_mode=trq_hu,
-            trq_volume_ml=trq_vol,
-            etv_ml=etv,
-            qc=qc,
-            members=tuple(member_results) if detail == "full" else tuple([OkamuraMemberResult(member_id=m.member_id, valid=m.valid, trq_hu_mode=m.trq_hu_mode, trq_volume_ml=m.trq_volume_ml, etv_ml=m.etv_ml, second_peak_ratio=m.second_peak_ratio) for m in member_results]),
+        member_results.append(
+            OkamuraMemberResult(
+                member_id=m.member_id,
+                valid=valid,
+                trq_hu_mode=float(mode),
+                trq_volume_ml=vol,
+                etv_ml=etv,
+                second_peak_ratio=float(second_ratio),
+                trq_mask=(m.trq_mask if detail == "full" else None),
+                airway_mask=(m.airway_mask if detail == "full" else None),
+            )
         )
 
-    # chaunzwa
-    opt = options if isinstance(options, ChaunzwaOptions) else ChaunzwaOptions()
+        modes.append(float(mode))
+        vols.append(vol)
+        etvs.append(etv)
+        valid_mask.append(valid)
+
+    valid_indices = [i for i, v in enumerate(valid_mask) if v]
+    use_indices = valid_indices if valid_indices else list(range(len(member_results)))
+
+    trq_hu = float(np.median([modes[i] for i in use_indices])) if use_indices else None
+    trq_vol = float(np.median([vols[i] for i in use_indices])) if use_indices else None
+    etv = float(np.median([etvs[i] for i in use_indices])) if use_indices else None
+
+    mean_jsd = None
+    mean_dsc = None
+    hu_var = None
+    flags: list[str] = []
+
+    if len(member_results) >= 2:
+        jsds: list[float] = []
+        dscs: list[float] = []
+        for i in range(len(member_results)):
+            for j in range(i + 1, len(member_results)):
+                if values_list[i].size and values_list[j].size:
+                    jsds.append(_jsd_from_values(values_list[i], values_list[j]))
+                dscs.append(_dice(masks[i], masks[j]))
+        mean_jsd = float(np.mean(jsds)) if jsds else None
+        mean_dsc = float(np.mean(dscs)) if dscs else None
+        hu_var = float(np.var([modes[i] for i in use_indices])) if len(use_indices) >= 2 else 0.0
+
+    if opt.invalidate_if_any_member_invalid and member_results and (not all(valid_mask)):
+        flags.append("invalid_member")
+    if opt.apply_qc:
+        if mean_jsd is not None and mean_jsd >= opt.js_divergence_threshold:
+            flags.append("high_jsd")
+        if mean_dsc is not None and mean_dsc <= opt.pairwise_dsc_threshold:
+            flags.append("low_dsc")
+        if hu_var is not None and hu_var >= opt.hu_variance_threshold:
+            flags.append("high_hu_variance")
+
+    if len(member_results) == 0:
+        qc_status = "not_available"
+        met = None
+    else:
+        met = len(flags) == 0
+        qc_status = "ok" if met else "check"
+
+    qc = OkamuraQC(
+        status=qc_status,
+        paper_criteria_met=met,
+        flags=tuple(flags),
+        mean_pairwise_jsd=mean_jsd,
+        mean_pairwise_dsc=mean_dsc,
+        hu_variance=hu_var,
+        valid_member_count=len(valid_indices),
+    )
+
+    members_out = tuple(member_results) if detail == "full" else tuple(_as_summary_member(m) for m in member_results)
+
+    return AnalysisResultOkamura(
+        study_id=segmentation.study_id,
+        method="okamura",
+        meta=_meta(segmentation, "okamura", detail),
+        segmentation=(segmentation if detail == "full" else None),
+        trq_hu_mode=trq_hu,
+        trq_volume_ml=trq_vol,
+        etv_ml=etv,
+        qc=qc,
+        members=members_out,
+    )
+
+
+def _quantify_chaunzwa(
+    segmentation: SegmentationResult,
+    opt: ChaunzwaOptions,
+    detail: DetailLevel,
+) -> AnalysisResultChaunzwa:
+    """Run Chaunzwa quantification with 1D GMM on TRQ voxel HU values."""
     if segmentation.trq_mask is None:
         raise ValueError("segmentation.trq_mask is required")
+
     mask = np.asarray(segmentation.trq_mask)
-    # obtain ct from first member raw_output if present, else synthetic default
+
     ct = None
     img = None
     if segmentation.members and isinstance(segmentation.members[0].raw_output, dict):
@@ -437,24 +526,52 @@ def quantify(segmentation: SegmentationResult, *, method: MethodName, options: O
         best = fits[0]
 
     k, pis, mus, sigmas, resp, conv, n_iter, ll, bic, aic = best
+
     atrq = float(np.sum(pis * mus))
     trq_vol = float(mask.sum()) if img is None else _voxvol_ml(mask, img)
     ptt = float(np.clip((atrq - opt.aadipose_hu) / (opt.athymic_hu - opt.aadipose_hu), 0.0, 1.0))
     etv = float(ptt * trq_vol)
 
-    comps = []
     post_mass = np.sum(resp, axis=0)
-    voxel_ml = (1.0 if img is None else (img.header.get_zooms()[0] * img.header.get_zooms()[1] * img.header.get_zooms()[2]) / 1000.0)
-    for i in range(k):
-        comps.append(GMMComponent(component_id=i, weight=float(pis[i]), mu_hu=float(mus[i]), sigma_hu=float(sigmas[i]), posterior_mass_vox=float(post_mass[i]), posterior_volume_ml=float(post_mass[i] * voxel_ml)))
+    voxel_ml = (
+        1.0
+        if img is None
+        else (img.header.get_zooms()[0] * img.header.get_zooms()[1] * img.header.get_zooms()[2]) / 1000.0
+    )
 
-    gmm = GaussianMixtureFit(n_components=k, converged=bool(conv), n_iter=int(n_iter), model_selection=opt.model_selection, aic=float(aic), bic=float(bic), components=tuple(comps))
+    components = [
+        GMMComponent(
+            component_id=i,
+            weight=float(pis[i]),
+            mu_hu=float(mus[i]),
+            sigma_hu=float(sigmas[i]),
+            posterior_mass_vox=float(post_mass[i]),
+            posterior_volume_ml=float(post_mass[i] * voxel_ml),
+        )
+        for i in range(k)
+    ]
+
+    gmm = GaussianMixtureFit(
+        n_components=k,
+        converged=bool(conv),
+        n_iter=int(n_iter),
+        model_selection=opt.model_selection,
+        aic=float(aic),
+        bic=float(bic),
+        components=tuple(components),
+    )
 
     posterior = PosteriorSummary(
         component_posterior_mass_vox={i: float(post_mass[i]) for i in range(k)},
         component_posterior_volume_ml={i: float(post_mass[i] * voxel_ml) for i in range(k)},
-        tissue_posterior_mass_vox={"thymic": float(np.sum(resp * (mus[None, :] >= 0), axis=None)), "adipose": float(np.sum(resp * (mus[None, :] < 0), axis=None))},
-        tissue_posterior_volume_ml={"thymic": float(np.sum(resp * (mus[None, :] >= 0), axis=None) * voxel_ml), "adipose": float(np.sum(resp * (mus[None, :] < 0), axis=None) * voxel_ml)},
+        tissue_posterior_mass_vox={
+            "thymic": float(np.sum(resp * (mus[None, :] >= 0), axis=None)),
+            "adipose": float(np.sum(resp * (mus[None, :] < 0), axis=None)),
+        },
+        tissue_posterior_volume_ml={
+            "thymic": float(np.sum(resp * (mus[None, :] >= 0), axis=None) * voxel_ml),
+            "adipose": float(np.sum(resp * (mus[None, :] < 0), axis=None) * voxel_ml),
+        },
     )
 
     posterior_maps = None
@@ -480,17 +597,84 @@ def quantify(segmentation: SegmentationResult, *, method: MethodName, options: O
 
 
 @overload
-def analyze(image: ImageInput, *, method: Literal["okamura"], study_id: str | None = None, segmentor: str | LoadedSegmentor = "okamura_trq_v1", revision: str | None = None, options: OkamuraOptions | None = None, detail: DetailLevel = "summary", device: str = "auto") -> AnalysisResultOkamura: ...
+def quantify(
+    segmentation: SegmentationResult,
+    *,
+    method: Literal["okamura"],
+    options: OkamuraOptions | None = None,
+    detail: DetailLevel = "summary",
+) -> AnalysisResultOkamura: ...
 
 
 @overload
-def analyze(image: ImageInput, *, method: Literal["chaunzwa"], study_id: str | None = None, segmentor: str | LoadedSegmentor = "okamura_trq_v1", revision: str | None = None, options: ChaunzwaOptions | None = None, detail: DetailLevel = "summary", device: str = "auto") -> AnalysisResultChaunzwa: ...
+def quantify(
+    segmentation: SegmentationResult,
+    *,
+    method: Literal["chaunzwa"],
+    options: ChaunzwaOptions | None = None,
+    detail: DetailLevel = "summary",
+) -> AnalysisResultChaunzwa: ...
 
 
-def analyze(image: ImageInput, *, method: MethodName, study_id: str | None = None, segmentor: str | LoadedSegmentor = "okamura_trq_v1", revision: str | None = None, options: OkamuraOptions | ChaunzwaOptions | None = None, detail: DetailLevel = "summary", device: str = "auto") -> AnalysisResultBase:
+def quantify(
+    segmentation: SegmentationResult,
+    *,
+    method: MethodName,
+    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    detail: DetailLevel = "summary",
+) -> AnalysisResultBase:
+    """Quantify a segmented TRQ using a selected scientific method."""
+    if method == "okamura":
+        opt = options if isinstance(options, OkamuraOptions) else OkamuraOptions()
+        return _quantify_okamura(segmentation=segmentation, opt=opt, detail=detail)
+
+    opt = options if isinstance(options, ChaunzwaOptions) else ChaunzwaOptions()
+    return _quantify_chaunzwa(segmentation=segmentation, opt=opt, detail=detail)
+
+
+@overload
+def analyze(
+    image: ImageInput,
+    *,
+    method: Literal["okamura"],
+    study_id: str | None = None,
+    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    revision: str | None = None,
+    options: OkamuraOptions | None = None,
+    detail: DetailLevel = "summary",
+    device: str = "auto",
+) -> AnalysisResultOkamura: ...
+
+
+@overload
+def analyze(
+    image: ImageInput,
+    *,
+    method: Literal["chaunzwa"],
+    study_id: str | None = None,
+    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    revision: str | None = None,
+    options: ChaunzwaOptions | None = None,
+    detail: DetailLevel = "summary",
+    device: str = "auto",
+) -> AnalysisResultChaunzwa: ...
+
+
+def analyze(
+    image: ImageInput,
+    *,
+    method: MethodName,
+    study_id: str | None = None,
+    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    revision: str | None = None,
+    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    detail: DetailLevel = "summary",
+    device: str = "auto",
+) -> AnalysisResultBase:
+    """Run one-shot segmentation + quantification pipeline."""
     seg = segment_trq(image, study_id=study_id, segmentor=segmentor, revision=revision, device=device)
 
-    # attach CT to member raw_output for quantification routines
+    # Attach CT context for downstream quantification logic.
     img = image if isinstance(image, nib.spatialimages.SpatialImage) else nib.load(str(image))
     ct = np.asarray(img.get_fdata(), dtype=float)
     for m in seg.members:
@@ -503,14 +687,54 @@ def analyze(image: ImageInput, *, method: MethodName, study_id: str | None = Non
 
 
 @overload
-def analyze_many(images: Sequence[ImageInput], *, method: Literal["okamura"], study_ids: Sequence[str | None] | None = None, segmentor: str | LoadedSegmentor = "okamura_trq_v1", revision: str | None = None, options: OkamuraOptions | None = None, detail: DetailLevel = "summary", on_error: OnError = "record", device: str = "auto") -> BatchAnalysisResultOkamura: ...
+def analyze_many(
+    images: Sequence[ImageInput],
+    *,
+    method: Literal["okamura"],
+    study_ids: Sequence[str | None] | None = None,
+    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    revision: str | None = None,
+    options: OkamuraOptions | None = None,
+    detail: DetailLevel = "summary",
+    on_error: OnError = "record",
+    device: str = "auto",
+) -> BatchAnalysisResultOkamura: ...
 
 
 @overload
-def analyze_many(images: Sequence[ImageInput], *, method: Literal["chaunzwa"], study_ids: Sequence[str | None] | None = None, segmentor: str | LoadedSegmentor = "okamura_trq_v1", revision: str | None = None, options: ChaunzwaOptions | None = None, detail: DetailLevel = "summary", on_error: OnError = "record", device: str = "auto") -> BatchAnalysisResultChaunzwa: ...
+def analyze_many(
+    images: Sequence[ImageInput],
+    *,
+    method: Literal["chaunzwa"],
+    study_ids: Sequence[str | None] | None = None,
+    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    revision: str | None = None,
+    options: ChaunzwaOptions | None = None,
+    detail: DetailLevel = "summary",
+    on_error: OnError = "record",
+    device: str = "auto",
+) -> BatchAnalysisResultChaunzwa: ...
 
 
-def analyze_many(images: Sequence[ImageInput], *, method: MethodName, study_ids: Sequence[str | None] | None = None, segmentor: str | LoadedSegmentor = "okamura_trq_v1", revision: str | None = None, options: OkamuraOptions | ChaunzwaOptions | None = None, detail: DetailLevel = "summary", on_error: OnError = "record", device: str = "auto") -> BatchAnalysisResultBase:
+def analyze_many(
+    images: Sequence[ImageInput],
+    *,
+    method: MethodName,
+    study_ids: Sequence[str | None] | None = None,
+    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    revision: str | None = None,
+    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    detail: DetailLevel = "summary",
+    on_error: OnError = "record",
+    device: str = "auto",
+) -> BatchAnalysisResultBase:
+    """Run one-shot analysis for multiple studies.
+
+    Notes
+    -----
+    When `segmentor` is a string, loading happens once and the same
+    `LoadedSegmentor` is reused for all items.
+    """
     if study_ids is not None and len(study_ids) != len(images):
         raise ValueError("study_ids must match images length")
 
@@ -521,14 +745,29 @@ def analyze_many(images: Sequence[ImageInput], *, method: MethodName, study_ids:
     for i, image in enumerate(images):
         sid = None if study_ids is None else study_ids[i]
         try:
-            r = analyze(image, method=method, study_id=sid, segmentor=seg_loaded, options=options, detail=detail, device=device)
+            r = analyze(
+                image,
+                method=method,
+                study_id=sid,
+                segmentor=seg_loaded,
+                options=options,
+                detail=detail,
+                device=device,
+            )
             results.append(r)
         except Exception as e:
             if on_error == "raise":
                 raise
             if on_error == "record":
-                errors.append(BatchErrorRecord(input_source=str(image), study_id=sid, error_type=type(e).__name__, message=str(e)))
-            # skip -> do nothing
+                errors.append(
+                    BatchErrorRecord(
+                        input_source=str(image),
+                        study_id=sid,
+                        error_type=type(e).__name__,
+                        message=str(e),
+                    )
+                )
+            # on_error == "skip" -> ignore
 
     if method == "okamura":
         return BatchAnalysisResultOkamura(method="okamura", results=tuple(results), errors=tuple(errors))

@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""Segmentation backends and result containers for :mod:`thymus_quant`.
+
+This module provides:
+- `LoadedSegmentor`: runtime handle for a segmentation backend
+- lightweight data classes that describe segmentor metadata and outputs
+- TRQ segmentation using `TRQseg-v1` (DeepLabV3-ResNet50) when available
+- heuristic fallback segmentation for environments without NN dependencies
+"""
+
 import os
 import threading
 from dataclasses import dataclass, field
@@ -15,13 +24,14 @@ else:
 
 
 def _load_image(image: ImageInput) -> nib.spatialimages.SpatialImage:
+    """Load NIfTI image from path-like input or pass through nibabel image."""
     if isinstance(image, nib.spatialimages.SpatialImage):
         return image
     return nib.load(str(image))
 
 
 def _simple_trq_segmentation(ct: np.ndarray) -> np.ndarray:
-    """Lightweight fallback segmentation when NN backend is unavailable."""
+    """Compute simple heuristic TRQ mask when NN backend is unavailable."""
     finite = np.isfinite(ct)
     mask = finite & (ct > -250) & (ct < 200)
     if mask.sum() == 0:
@@ -40,6 +50,7 @@ def _simple_trq_segmentation(ct: np.ndarray) -> np.ndarray:
 
 
 def _upsample_label_to_xyz(y_zxy: np.ndarray, x_size: int, y_size: int) -> np.ndarray:
+    """Upsample downsampled label map back to original XY size and XYZ order."""
     y_up = np.repeat(np.repeat(y_zxy, 2, axis=1), 2, axis=2)
     y_up = y_up[:, :x_size, :y_size]
     return y_up.transpose(1, 2, 0)
@@ -47,6 +58,8 @@ def _upsample_label_to_xyz(y_zxy: np.ndarray, x_size: int, y_size: int) -> np.nd
 
 @dataclass(slots=True)
 class SegmentorMember:
+    """Descriptor for one model member (e.g., one fold) in a segmentor."""
+
     member_id: str
     relative_path: str | None = None
     local_path: str | None = None
@@ -55,6 +68,8 @@ class SegmentorMember:
 
 @dataclass(slots=True)
 class SegmentorInfo:
+    """Resolved metadata for a segmentation backend."""
+
     name: str
     repo_id: str | None = None
     requested_revision: str | None = None
@@ -68,6 +83,15 @@ class SegmentorInfo:
 
 @dataclass(slots=True)
 class LoadedSegmentor:
+    """In-memory segmentor handle with lazy-loaded model objects.
+
+    Notes
+    -----
+    - Models are loaded only once per instance (`_ensure_models_loaded`).
+    - A lock protects concurrent first-load calls.
+    - If NN dependencies are unavailable, heuristic fallback can still run.
+    """
+
     info: SegmentorInfo
     members: tuple[SegmentorMember, ...] = ()
     device: str = "auto"
@@ -76,7 +100,8 @@ class LoadedSegmentor:
     _runtime_device: str | None = field(default=None, repr=False)
     _load_lock: Any = field(default_factory=threading.Lock, repr=False)
 
-    def _resolve_device(self):
+    def _resolve_device(self) -> str:
+        """Resolve concrete execution device from user hint."""
         import torch
 
         if self.device == "auto":
@@ -84,6 +109,7 @@ class LoadedSegmentor:
         return self.device
 
     def _resolve_weight_path(self, member: SegmentorMember) -> str:
+        """Resolve local or Hub path for one member's weight file."""
         if member.local_path and os.path.exists(member.local_path):
             return member.local_path
 
@@ -111,6 +137,7 @@ class LoadedSegmentor:
         return path
 
     def _ensure_models_loaded(self) -> None:
+        """Lazy-load NN models for selected members if not loaded yet."""
         if self._models:
             return
 
@@ -124,7 +151,6 @@ class LoadedSegmentor:
                 return
 
             try:
-                import torch
                 import torchvision
                 from safetensors.torch import load_file
             except Exception as e:  # pragma: no cover - dependency/runtime environment dependent
@@ -155,6 +181,7 @@ class LoadedSegmentor:
             self._runtime_device = runtime_device
 
     def _predict_logits(self, model: Any, x_np: np.ndarray, split_size: int = 64) -> np.ndarray:
+        """Run batched forward pass and return raw logits on CPU numpy arrays."""
         import torch
 
         device = self._runtime_device or self._resolve_device()
@@ -172,6 +199,13 @@ class LoadedSegmentor:
         *,
         study_id: str | None = None,
     ) -> "SegmentationResult":
+        """Segment TRQ region for one input image.
+
+        Returns
+        -------
+        SegmentationResult
+            Includes representative/fused mask and member-level masks.
+        """
         img = _load_image(image)
         ct = np.asarray(img.get_fdata(), dtype=np.float32)
 
@@ -237,6 +271,8 @@ class LoadedSegmentor:
 
 @dataclass(slots=True)
 class SegmentationMember:
+    """One member-level segmentation payload."""
+
     member_id: str
     trq_mask: Any
     airway_mask: Any | None = None
@@ -245,6 +281,8 @@ class SegmentationMember:
 
 @dataclass(slots=True)
 class SegmentationResult:
+    """Common segmentation container passed into quantification methods."""
+
     study_id: str | None = None
     segmentor: SegmentorInfo | None = None
     trq_mask: Any | None = None
@@ -253,6 +291,7 @@ class SegmentationResult:
     merge_strategy: Literal["none", "vote", "union", "intersection", "custom"] = "none"
 
     def to_dict(self) -> dict[str, Any]:
+        """Return lightweight JSON-friendly segmentation summary."""
         return {
             "study_id": self.study_id,
             "segmentor": None
