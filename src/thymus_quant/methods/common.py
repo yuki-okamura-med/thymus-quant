@@ -9,10 +9,10 @@ import numpy as np
 def voxvol_ml(mask: np.ndarray, img: nib.spatialimages.SpatialImage | None) -> float:
     """Convert mask voxel count to physical volume in mL.
 
-    If image spacing is unavailable (`img is None`), returns raw voxel count.
+    If image spacing is unavailable (`img is None`), return ``NaN``.
     """
     if img is None:
-        return float((mask > 0).sum())
+        return float("nan")
     zoom = img.header.get_zooms()[:3]
     return float((mask > 0).sum() * (zoom[0] * zoom[1] * zoom[2]) / 1000.0)
 
