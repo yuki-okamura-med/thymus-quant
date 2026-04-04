@@ -10,7 +10,7 @@ Implemented APIs:
 
 ## Segmentation backend
 
-`okamura_trq_v1` now uses the published model repository:
+`trqseg_v1` now uses the published model repository:
 - Hugging Face: `yuki-okamura-hf/TRQseg-v1`
 - architecture: DeepLabV3-ResNet50 (5-fold ensemble)
 

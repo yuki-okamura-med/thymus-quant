@@ -4,7 +4,7 @@ from __future__ import annotations
 
 Design intent:
 - `api.py` keeps public entry points and orchestration.
-- method-specific quantification logic lives under `thymus_quant.methods`.
+- method-specific quantification logic lives under `thymus_quant.quantification`.
 """
 
 import os
@@ -15,8 +15,8 @@ from typing import Literal, Sequence, overload
 import nibabel as nib
 import numpy as np
 
-from .methods.chaunzwa import ChaunzwaOptions, quantify_chaunzwa
-from .methods.okamura import OkamuraOptions, quantify_okamura
+from .quantification.chaunzwa import ChaunzwaOptions, quantify_chaunzwa
+from .quantification.okamura import OkamuraOptions, quantify_okamura
 from .results import (
     AnalysisResultBase,
     AnalysisResultChaunzwa,
@@ -44,15 +44,15 @@ def list_methods() -> tuple[MethodName, ...]:
 
 def list_segmentors() -> dict[str, SegmentorInfo]:
     """Return built-in segmentor registry."""
-    available = tuple(f"fold-{i}" for i in range(5))
+    trqseg_v1_fold_members = tuple(f"fold-{i}" for i in range(5))
     return {
-        "okamura_trq_v1": SegmentorInfo(
-            name="okamura_trq_v1",
+        "trqseg_v1": SegmentorInfo(
+            name="trqseg_v1",
             repo_id="yuki-okamura-hf/TRQseg-v1",
             architecture="deeplabv3_resnet50",
             is_ensemble=True,
-            available_members=available,
-            selected_members=available,
+            available_members=trqseg_v1_fold_members,
+            selected_members=trqseg_v1_fold_members,
         ),
         "heuristic_trq": SegmentorInfo(
             name="heuristic_trq",
@@ -114,7 +114,7 @@ def _segmentor_cache_key(
 
 
 def load_segmentor(
-    segmentor: str = "okamura_trq_v1",
+    segmentor: str | None = None,
     *,
     revision: str | None = None,
     ensemble: bool | Literal["auto"] = "auto",
@@ -123,7 +123,16 @@ def load_segmentor(
     local_files_only: bool = False,
     device: str = "auto",
 ) -> LoadedSegmentor:
-    """Resolve and return a (cached) loaded segmentor handle."""
+    """Resolve and return a (cached) loaded segmentor handle.
+
+    `segmentor` must be explicitly specified.
+    """
+    if segmentor is None:
+        raise ValueError(
+            "segmentor must be specified explicitly (e.g. 'trqseg_v1'). "
+            f"Available aliases: {', '.join(sorted(list_segmentors().keys()))}"
+        )
+
     reg = list_segmentors()
     info = reg.get(segmentor)
     if info is None:
@@ -187,11 +196,15 @@ def segment_trq(
     image: ImageInput,
     *,
     study_id: str | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     device: str = "auto",
 ) -> SegmentationResult:
     """Segment TRQ region and return segmentation container."""
+    if segmentor is None:
+        raise ValueError(
+            "segmentor must be specified explicitly (string alias/repo ID or LoadedSegmentor)."
+        )
     seg = load_segmentor(segmentor, revision=revision, device=device) if isinstance(segmentor, str) else segmentor
     return seg.segment_trq(image, study_id=study_id)
 
@@ -257,7 +270,7 @@ def analyze(
     *,
     method: Literal["okamura"],
     study_id: str | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
@@ -271,7 +284,7 @@ def analyze(
     *,
     method: Literal["chaunzwa"],
     study_id: str | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     options: ChaunzwaOptions | None = None,
     detail: DetailLevel = "summary",
@@ -284,13 +297,18 @@ def analyze(
     *,
     method: MethodName,
     study_id: str | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     options: OkamuraOptions | ChaunzwaOptions | None = None,
     detail: DetailLevel = "summary",
     device: str = "auto",
 ) -> AnalysisResultBase:
     """Run one-shot segmentation + quantification."""
+    if segmentor is None:
+        raise ValueError(
+            "segmentor must be explicitly specified (string alias/repo ID or LoadedSegmentor)."
+        )
+
     seg = segment_trq(image, study_id=study_id, segmentor=segmentor, revision=revision, device=device)
 
     # Attach CT context for downstream method implementations.
@@ -311,7 +329,7 @@ def analyze_many(
     *,
     method: Literal["okamura"],
     study_ids: Sequence[str | None] | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
@@ -326,7 +344,7 @@ def analyze_many(
     *,
     method: Literal["chaunzwa"],
     study_ids: Sequence[str | None] | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     options: ChaunzwaOptions | None = None,
     detail: DetailLevel = "summary",
@@ -340,7 +358,7 @@ def analyze_many(
     *,
     method: MethodName,
     study_ids: Sequence[str | None] | None = None,
-    segmentor: str | LoadedSegmentor = "okamura_trq_v1",
+    segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
     options: OkamuraOptions | ChaunzwaOptions | None = None,
     detail: DetailLevel = "summary",
@@ -350,6 +368,10 @@ def analyze_many(
     """Run one-shot analysis for multiple studies."""
     if study_ids is not None and len(study_ids) != len(images):
         raise ValueError("study_ids must match images length")
+    if segmentor is None:
+        raise ValueError(
+            "segmentor must be explicitly specified (string alias/repo ID or LoadedSegmentor)."
+        )
 
     seg_loaded = load_segmentor(segmentor, revision=revision, device=device) if isinstance(segmentor, str) else segmentor
 

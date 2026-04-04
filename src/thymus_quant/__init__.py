@@ -17,8 +17,8 @@ from .api import (
     quantify,
     segment_trq,
 )
-from .methods.chaunzwa import ChaunzwaOptions
-from .methods.okamura import OkamuraOptions
+from .quantification.chaunzwa import ChaunzwaOptions
+from .quantification.okamura import OkamuraOptions
 from .results import (
     AnalysisResultBase,
     AnalysisResultChaunzwa,
