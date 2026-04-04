@@ -236,7 +236,7 @@ class LoadedSegmentor:
                         member_id=m.member_id,
                         trq_mask=trq,
                         airway_mask=airway,
-                        raw_output={"backend": "hf_trqseg_v1"},
+                        raw_output={"backend": "hf_trqseg_v1", "ct_array": ct, "ct_image": img},
                     )
                 )
 
@@ -249,7 +249,7 @@ class LoadedSegmentor:
                         member_id=m.member_id,
                         trq_mask=trq,
                         airway_mask=None,
-                        raw_output={"backend": "heuristic"},
+                        raw_output={"backend": "heuristic", "ct_array": ct, "ct_image": img},
                     )
                 )
 

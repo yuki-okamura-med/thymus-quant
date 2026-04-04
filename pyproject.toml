@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
   "nibabel>=5.0",
+  "scipy>=1.10",
 ]
 
 [project.optional-dependencies]

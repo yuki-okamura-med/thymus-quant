@@ -111,6 +111,9 @@ class OkamuraMemberResult:
     trq_hu_mode: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
+    ptt: float | None = None
+    etv_fraction_adjusted: float | None = None
+    atrq_below_aadipose: bool | None = None
     second_peak_ratio: float | None = None
     trq_mask: Any | None = None
     airway_mask: Any | None = None
@@ -118,11 +121,22 @@ class OkamuraMemberResult:
 
 @dataclass(slots=True)
 class AnalysisResultOkamura(AnalysisResultBase):
-    """Study-level output for the Okamura method."""
+    """Study-level output for the Okamura method.
+
+    Fields with `_members` suffix contain per-member values in the same order
+    as `members`.
+    """
 
     trq_hu_mode: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
+    ptt: float | None = None
+    atrq_below_aadipose_any: bool | None = None
+    trq_hu_mode_members: Sequence[float] = field(default_factory=tuple)
+    trq_volume_ml_members: Sequence[float] = field(default_factory=tuple)
+    etv_ml_members: Sequence[float] = field(default_factory=tuple)
+    ptt_members: Sequence[float] = field(default_factory=tuple)
+    atrq_below_aadipose_members: Sequence[bool] = field(default_factory=tuple)
     qc: OkamuraQC | None = None
     members: Sequence[OkamuraMemberResult] = field(default_factory=tuple)
 
@@ -136,6 +150,15 @@ class AnalysisResultOkamura(AnalysisResultBase):
                 "trq_hu_mode": self.trq_hu_mode,
                 "trq_volume_ml": self.trq_volume_ml,
                 "etv_ml": self.etv_ml,
+                "ptt": self.ptt,
+                "atrq_below_aadipose_any": self.atrq_below_aadipose_any,
+            },
+            "member_values": {
+                "trq_hu_mode_members": list(self.trq_hu_mode_members),
+                "trq_volume_ml_members": list(self.trq_volume_ml_members),
+                "etv_ml_members": list(self.etv_ml_members),
+                "ptt_members": list(self.ptt_members),
+                "atrq_below_aadipose_members": list(self.atrq_below_aadipose_members),
             },
             "qc": None if self.qc is None else asdict(self.qc),
             "members": [
@@ -145,6 +168,9 @@ class AnalysisResultOkamura(AnalysisResultBase):
                     "trq_hu_mode": m.trq_hu_mode,
                     "trq_volume_ml": m.trq_volume_ml,
                     "etv_ml": m.etv_ml,
+                    "ptt": m.ptt,
+                    "etv_fraction_adjusted": m.etv_fraction_adjusted,
+                    "atrq_below_aadipose": m.atrq_below_aadipose,
                     "second_peak_ratio": m.second_peak_ratio,
                 }
                 for m in self.members
@@ -159,6 +185,13 @@ class AnalysisResultOkamura(AnalysisResultBase):
             "trq_hu_mode": self.trq_hu_mode,
             "trq_volume_ml": self.trq_volume_ml,
             "etv_ml": self.etv_ml,
+            "ptt": self.ptt,
+            "atrq_below_aadipose_any": self.atrq_below_aadipose_any,
+            "trq_hu_mode_members": tuple(self.trq_hu_mode_members),
+            "trq_volume_ml_members": tuple(self.trq_volume_ml_members),
+            "etv_ml_members": tuple(self.etv_ml_members),
+            "ptt_members": tuple(self.ptt_members),
+            "atrq_below_aadipose_members": tuple(self.atrq_below_aadipose_members),
             "qc_status": None if self.qc is None else self.qc.status,
             "qc_paper_criteria_met": None if self.qc is None else self.qc.paper_criteria_met,
             "qc_mean_pairwise_jsd": None if self.qc is None else self.qc.mean_pairwise_jsd,
@@ -307,6 +340,9 @@ class BatchAnalysisResultOkamura(BatchAnalysisResultBase):
                         "trq_hu_mode": m.trq_hu_mode,
                         "trq_volume_ml": m.trq_volume_ml,
                         "etv_ml": m.etv_ml,
+                        "ptt": m.ptt,
+                        "etv_fraction_adjusted": m.etv_fraction_adjusted,
+                        "atrq_below_aadipose": m.atrq_below_aadipose,
                         "second_peak_ratio": m.second_peak_ratio,
                     }
                 )
