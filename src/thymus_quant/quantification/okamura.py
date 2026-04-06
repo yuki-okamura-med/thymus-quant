@@ -189,10 +189,15 @@ def quantify_okamura(
         mode, second_ratio = _kde_mode_and_second_ratio(vals)
         vol = voxvol_ml(mask, img)
 
-        ptt = float(np.clip((mode - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0))
+        ptt_fraction = float(
+            np.clip((mode - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0)
+        )
+        ptt = float(ptt_fraction * 100.0)
 
         mode_for_etv = float(max(mode, options.aadipose_hu + options.delta_hu_margin))
-        etv_frac = float(np.clip((mode_for_etv - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0))
+        etv_frac = float(
+            np.clip((mode_for_etv - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0)
+        )
         etv = float(etv_frac * vol)
 
         atrq_below = bool(np.isfinite(mode) and (mode < options.aadipose_hu))

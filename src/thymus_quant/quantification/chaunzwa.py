@@ -108,7 +108,7 @@ def quantify_chaunzwa(
         ct = segmentation.members[0].raw_output.get("ct_array")
         img = segmentation.members[0].raw_output.get("ct_image")
     if ct is None:
-        ct = np.where(mask > 0, -30.0, -110.0)
+        raise ValueError("CT array is missing for Chaunzwa quantification")
 
     vals = np.asarray(ct)[mask > 0]
     if vals.size == 0:
@@ -139,8 +139,11 @@ def quantify_chaunzwa(
 
     atrq = float(np.sum(pis * mus))
     trq_vol = voxvol_ml(mask, img)
-    ptt = float(np.clip((atrq - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0))
-    etv = float(ptt * trq_vol)
+    ptt_fraction = float(
+        np.clip((atrq - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0)
+    )
+    ptt = float(ptt_fraction * 100.0)
+    etv = float(ptt_fraction * trq_vol)
 
     post_mass = np.sum(resp, axis=0)
     voxel_ml = 1.0 if img is None else (img.header.get_zooms()[0] * img.header.get_zooms()[1] * img.header.get_zooms()[2]) / 1000.0

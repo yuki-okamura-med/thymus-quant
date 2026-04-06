@@ -104,7 +104,12 @@ class OkamuraQC:
 
 @dataclass(slots=True)
 class OkamuraMemberResult:
-    """Per-member quantitative result for ensemble-based Okamura analysis."""
+    """Per-member quantitative result for ensemble-based Okamura analysis.
+
+    Notes
+    -----
+    `ptt` is stored as percentage in the range 0-100.
+    """
 
     member_id: str
     valid: bool = True
@@ -125,6 +130,10 @@ class AnalysisResultOkamura(AnalysisResultBase):
 
     Fields with `_members` suffix contain per-member values in the same order
     as `members`.
+
+    Notes
+    -----
+    `ptt` and `ptt_members` are percentages in the range 0-100.
     """
 
     trq_hu_mode: float | None = None
@@ -251,7 +260,12 @@ class PosteriorMaps:
 
 @dataclass(slots=True)
 class AnalysisResultChaunzwa(AnalysisResultBase):
-    """Study-level output for the Chaunzwa method."""
+    """Study-level output for the Chaunzwa method.
+
+    Notes
+    -----
+    `ptt` is stored as percentage in the range 0-100.
+    """
 
     atrq_hu: float | None = None
     trq_volume_ml: float | None = None
