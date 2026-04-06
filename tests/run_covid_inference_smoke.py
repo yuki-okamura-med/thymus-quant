@@ -95,9 +95,13 @@ def main() -> int:
                     "mu_hu": c.mu_hu,
                     "weight": c.weight,
                     "group": (
-                        "adipose"
-                        if c.component_id in set(chaunzwa.adipose_component_ids)
-                        else "nonadipose"
+                        "exclude"
+                        if c.component_id in set(chaunzwa.exclude_component_ids)
+                        else (
+                            "adipose"
+                            if c.component_id in set(chaunzwa.adipose_component_ids)
+                            else "nonadipose"
+                        )
                     ),
                 }
                 for c in (chaunzwa.gmm.components if chaunzwa.gmm is not None else [])
@@ -121,28 +125,43 @@ def main() -> int:
     summary_path = text_out_dir / "covid_sample_foldwise_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # lightweight text table for quick inspection
-    lines = [
-        "fold\tokamura_ptt\tokamura_etv_ml\tchaunzwa_ptt\tchaunzwa_etv_ml\tchaunzwa_gmm(mu,pi)",
-    ]
-    for r in fold_results:
-        gmm_brief = ", ".join(
-            [
-                f"c{c['component_id']}:{c['mu_hu']:.2f}/{c['weight']:.3f}:{c['group']}"
-                for c in r["chaunzwa_gmm_components"]
-            ]
+    # CSV summary for quick inspection / spreadsheet use
+    import csv
+
+    csv_path = text_out_dir / "covid_sample_foldwise_summary.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "fold",
+                "okamura_ptt",
+                "okamura_etv_ml",
+                "chaunzwa_ptt",
+                "chaunzwa_etv_ml",
+                "chaunzwa_gmm_mu_weight_group",
+            ],
         )
-        lines.append(
-            f"{r['fold_id']}\t"
-            f"{r['okamura'].get('ptt')}\t{r['okamura'].get('etv_ml')}\t"
-            f"{r['chaunzwa'].get('ptt')}\t{r['chaunzwa'].get('etv_ml')}\t"
-            f"{gmm_brief}"
-        )
-    txt_path = text_out_dir / "covid_sample_foldwise_summary.txt"
-    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        writer.writeheader()
+        for r in fold_results:
+            gmm_brief = "; ".join(
+                [
+                    f"c{c['component_id']}:{c['mu_hu']:.2f}/{c['weight']:.3f}:{c['group']}"
+                    for c in r["chaunzwa_gmm_components"]
+                ]
+            )
+            writer.writerow(
+                {
+                    "fold": r["fold_id"],
+                    "okamura_ptt": r["okamura"].get("ptt"),
+                    "okamura_etv_ml": r["okamura"].get("etv_ml"),
+                    "chaunzwa_ptt": r["chaunzwa"].get("ptt"),
+                    "chaunzwa_etv_ml": r["chaunzwa"].get("etv_ml"),
+                    "chaunzwa_gmm_mu_weight_group": gmm_brief,
+                }
+            )
 
     print(f"[done] summary json -> {summary_path}")
-    print(f"[done] summary txt  -> {txt_path}")
+    print(f"[done] summary csv  -> {csv_path}")
     return 0
 
 

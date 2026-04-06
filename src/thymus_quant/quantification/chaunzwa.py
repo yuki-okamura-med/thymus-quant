@@ -5,7 +5,7 @@ from __future__ import annotations
 Paper-faithful primary definition:
 - fit GMM on histogramized TRQ HU values
 - evaluate voxel-wise posterior responsibilities
-- define pTT as mean posterior of non-adipose components (percent, 0-100)
+- define pTT as posterior non-adipose fraction (percent, 0-100)
 """
 
 import math
@@ -24,7 +24,6 @@ from ..results import (
     ResultMeta,
 )
 from ..segmentors import SegmentationResult
-from .common import voxvol_ml
 
 
 @dataclass(slots=True)
@@ -40,6 +39,8 @@ class ChaunzwaOptions:
     adipose_policy: Literal["lowest_mean_only", "lowest_plus_subfat"] = "lowest_mean_only"
     ptt_definition: Literal["posterior_nonadipose", "atrq_linear"] = "posterior_nonadipose"
     bayesian_delta_hu: float = 1.0
+    exclude_mu_hu_below: float = -150.0
+    exclude_mu_hu_above: float = 200.0
     include_posterior_maps: bool = False
     include_histogram: bool = False
 
@@ -69,17 +70,7 @@ def _fit_gmm_histogram_1d(
     max_iter: int = 200,
     tol: float = 1e-6,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool, int, float]:
-    """Fit 1D GMM using weighted EM on histogram bin centers.
-
-    Parameters
-    ----------
-    values:
-        Finite HU values inside TRQ mask.
-    k:
-        Number of components.
-    bins:
-        Histogram bins over full dynamic range.
-    """
+    """Fit 1D GMM using weighted EM on histogram bin centers."""
     vals = np.asarray(values, dtype=float)
     counts, edges = np.histogram(vals, bins=bins)
     centers = 0.5 * (edges[:-1] + edges[1:])
@@ -99,6 +90,7 @@ def _fit_gmm_histogram_1d(
     w_mean = float(np.sum(w * x) / max(w_sum, 1.0))
     w_var = float(np.sum(w * (x - w_mean) ** 2) / max(w_sum, 1.0))
     init_sigma = math.sqrt(max(w_var, 1e-6))
+
     sigmas = np.full(k, init_sigma, dtype=float)
     pis = np.full(k, 1.0 / k, dtype=float)
 
@@ -107,7 +99,6 @@ def _fit_gmm_histogram_1d(
     it = 0
 
     for it in range(1, max_iter + 1):
-        # E-step on histogram centers
         prob = np.zeros((x.size, k), dtype=float)
         for j in range(k):
             prob[:, j] = pis[j] * _gaussian_pdf(x, mus[j], sigmas[j])
@@ -116,10 +107,8 @@ def _fit_gmm_histogram_1d(
         denom = np.clip(denom, 1e-12, None)
         r = prob / denom
 
-        # M-step with histogram counts as weights
         n_i = np.sum(w[:, None] * r, axis=0)
         pis = n_i / max(n_vox, 1.0)
-
         mus = np.sum(w[:, None] * r * x[:, None], axis=0) / np.clip(n_i, 1e-12, None)
         var = np.sum(w[:, None] * r * (x[:, None] - mus[None, :]) ** 2, axis=0) / np.clip(n_i, 1e-12, None)
         sigmas = np.sqrt(np.clip(var, 1e-6, None))
@@ -152,37 +141,43 @@ def _voxel_responsibilities(values: np.ndarray, pis: np.ndarray, mus: np.ndarray
     return prob / denom
 
 
-def _adipose_component_ids(
+def _sum_resp(resp: np.ndarray, ids: set[int]) -> np.ndarray:
+    if not ids:
+        return np.zeros(resp.shape[0], dtype=float)
+    return np.sum(resp[:, sorted(ids)], axis=1)
+
+
+def _component_sets(
     mus: np.ndarray,
     *,
     policy: Literal["lowest_mean_only", "lowest_plus_subfat"],
     aadipose_hu: float,
-) -> set[int]:
-    """Choose adipose component set F from fitted component means.
+    exclude_mu_hu_below: float,
+    exclude_mu_hu_above: float,
+) -> tuple[set[int], set[int], set[int]]:
+    """Split components into adipose / nonadipose / exclude sets."""
+    all_ids = set(range(len(mus)))
+    exclude_ids = {
+        int(i)
+        for i, mu in enumerate(mus)
+        if (float(mu) < float(exclude_mu_hu_below)) or (float(mu) > float(exclude_mu_hu_above))
+    }
 
-    Default policy follows the paper-oriented conservative choice:
-    `lowest_mean_only`.
+    candidate_ids = [int(i) for i in np.argsort(mus) if int(i) not in exclude_ids]
+    if not candidate_ids:
+        return set(), set(), exclude_ids
 
-    To avoid forcing adipose when no fat-like component exists, we require
-    the lowest-mean component to be <= `aadipose_hu`.
-    """
-    order = np.argsort(mus)
-    if order.size == 0:
-        return set()
+    adipose_ids: set[int] = set()
+    lowest = candidate_ids[0]
+    if float(mus[lowest]) <= float(aadipose_hu):
+        adipose_ids.add(lowest)
+        if policy == "lowest_plus_subfat":
+            for i in candidate_ids[1:]:
+                if float(mus[i]) <= float(aadipose_hu):
+                    adipose_ids.add(i)
 
-    lowest = int(order[0])
-    if float(mus[lowest]) > float(aadipose_hu):
-        # no adipose-like mode present
-        return set()
-
-    ids = {lowest}
-
-    if policy == "lowest_plus_subfat":
-        for i in order[1:]:
-            if float(mus[i]) <= float(aadipose_hu):
-                ids.add(int(i))
-
-    return ids
+    nonadipose_ids = set(candidate_ids) - adipose_ids
+    return adipose_ids, nonadipose_ids, exclude_ids
 
 
 def quantify_chaunzwa(
@@ -247,20 +242,29 @@ def quantify_chaunzwa(
     # voxel-wise posterior responsibilities
     resp = _voxel_responsibilities(vals, pis, mus, sigmas)
 
-    adipose_ids = _adipose_component_ids(
+    adipose_ids, nonadipose_ids, exclude_ids = _component_sets(
         mus,
         policy=options.adipose_policy,
         aadipose_hu=options.aadipose_hu,
-    )
-    nonadipose_ids = set(range(k)) - adipose_ids
-
-    gamma_adipose = np.sum(resp[:, sorted(adipose_ids)], axis=1) if adipose_ids else np.zeros(vals.size, dtype=float)
-    gamma_nonadipose = (
-        np.sum(resp[:, sorted(nonadipose_ids)], axis=1) if nonadipose_ids else np.zeros(vals.size, dtype=float)
+        exclude_mu_hu_below=options.exclude_mu_hu_below,
+        exclude_mu_hu_above=options.exclude_mu_hu_above,
     )
 
-    # primary pTT definition (percent)
-    ptt_posterior_percent = float(np.mean(gamma_nonadipose) * 100.0)
+    gamma_adipose = _sum_resp(resp, adipose_ids)
+    gamma_nonadipose = _sum_resp(resp, nonadipose_ids)
+    gamma_exclude = _sum_resp(resp, exclude_ids)
+    gamma_included = gamma_adipose + gamma_nonadipose
+
+    included_mass_total = float(np.sum(gamma_included))
+    if included_mass_total <= 0:
+        raise ValueError("All posterior mass is excluded by component HU thresholds")
+
+    nonadipose_mass = float(np.sum(gamma_nonadipose))
+    adipose_mass = float(np.sum(gamma_adipose))
+    exclude_mass = float(np.sum(gamma_exclude))
+
+    # primary pTT definition (percent): non-adipose posterior over included posterior
+    ptt_posterior_percent = float(100.0 * nonadipose_mass / included_mass_total)
     ptt_posterior_percent = float(np.clip(ptt_posterior_percent, 0.0, 100.0))
 
     # legacy pTT definition for backward compatibility
@@ -268,20 +272,19 @@ def quantify_chaunzwa(
         np.clip((atrq - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0) * 100.0
     )
 
-    if options.ptt_definition == "atrq_linear":
-        ptt = ptt_linear_percent
-    else:
-        ptt = ptt_posterior_percent
+    ptt = ptt_linear_percent if options.ptt_definition == "atrq_linear" else ptt_posterior_percent
 
-    trq_vol = voxvol_ml(mask, img)
-    etv = float(trq_vol * (ptt / 100.0))
-
-    post_mass = np.sum(resp, axis=0)
     voxel_ml = (
         float("nan")
         if img is None
         else (img.header.get_zooms()[0] * img.header.get_zooms()[1] * img.header.get_zooms()[2]) / 1000.0
     )
+
+    # effective TRQ volume excludes component posterior assigned to exclude set
+    trq_vol = float(included_mass_total * voxel_ml)
+    etv = float(trq_vol * (ptt / 100.0))
+
+    post_mass = np.sum(resp, axis=0)
 
     components = [
         GMMComponent(
@@ -305,25 +308,23 @@ def quantify_chaunzwa(
         components=tuple(components),
     )
 
-    adipose_mass = float(np.sum(gamma_adipose))
-    nonadipose_mass = float(np.sum(gamma_nonadipose))
-
     posterior = PosteriorSummary(
         component_posterior_mass_vox={i: float(post_mass[i]) for i in range(k)},
         component_posterior_volume_ml={i: float(post_mass[i] * voxel_ml) for i in range(k)},
         tissue_posterior_mass_vox={
             "adipose": adipose_mass,
             "thymic": nonadipose_mass,
+            "exclude": exclude_mass,
         },
         tissue_posterior_volume_ml={
             "adipose": float(adipose_mass * voxel_ml),
             "thymic": float(nonadipose_mass * voxel_ml),
+            "exclude": float(exclude_mass * voxel_ml),
         },
     )
 
     posterior_maps = None
     if options.include_posterior_maps:
-        # map each finite TRQ voxel back to volume space
         trq_idx = np.argwhere(mask > 0)
         ct_vals = np.asarray(ct, dtype=float)[mask > 0]
         finite_sel = np.isfinite(ct_vals)
@@ -332,24 +333,34 @@ def quantify_chaunzwa(
         component_maps: dict[int, np.ndarray] = {}
         for i in range(k):
             arr = np.zeros(mask.shape, dtype=np.float32)
-            arr[tuple(finite_idx.T)] = resp[:, i].astype(np.float32)
+            if finite_idx.size > 0:
+                arr[tuple(finite_idx.T)] = resp[:, i].astype(np.float32)
             component_maps[i] = arr
 
         adipose_map = np.zeros(mask.shape, dtype=np.float32)
-        if adipose_ids:
+        if adipose_ids and finite_idx.size > 0:
             adipose_map[tuple(finite_idx.T)] = gamma_adipose.astype(np.float32)
 
         thymic_map = np.zeros(mask.shape, dtype=np.float32)
-        if nonadipose_ids:
+        if nonadipose_ids and finite_idx.size > 0:
             thymic_map[tuple(finite_idx.T)] = gamma_nonadipose.astype(np.float32)
 
+        exclude_map = np.zeros(mask.shape, dtype=np.float32)
+        if exclude_ids and finite_idx.size > 0:
+            exclude_map[tuple(finite_idx.T)] = gamma_exclude.astype(np.float32)
+
         hard = np.zeros(mask.shape, dtype=np.int16)
-        hard_labels = np.argmax(resp, axis=1) + 1
-        hard[tuple(finite_idx.T)] = hard_labels.astype(np.int16)
+        if finite_idx.size > 0:
+            hard_labels = np.argmax(resp, axis=1) + 1
+            hard[tuple(finite_idx.T)] = hard_labels.astype(np.int16)
 
         posterior_maps = PosteriorMaps(
             component_posteriors=component_maps,
-            tissue_posteriors={"adipose": adipose_map, "thymic": thymic_map},
+            tissue_posteriors={
+                "adipose": adipose_map,
+                "thymic": thymic_map,
+                "exclude": exclude_map,
+            },
             hard_component_labels=hard,
         )
 
@@ -368,6 +379,7 @@ def quantify_chaunzwa(
         ptt_linear_legacy=ptt_linear_percent,
         adipose_component_ids=tuple(sorted(adipose_ids)),
         nonadipose_component_ids=tuple(sorted(nonadipose_ids)),
+        exclude_component_ids=tuple(sorted(exclude_ids)),
         gmm=gmm,
         posterior=posterior,
         posterior_maps=posterior_maps,

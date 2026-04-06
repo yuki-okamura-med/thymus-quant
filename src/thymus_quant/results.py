@@ -277,6 +277,7 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
     ptt_linear_legacy: float | None = None
     adipose_component_ids: Sequence[int] = field(default_factory=tuple)
     nonadipose_component_ids: Sequence[int] = field(default_factory=tuple)
+    exclude_component_ids: Sequence[int] = field(default_factory=tuple)
     gmm: GaussianMixtureFit | None = None
     posterior: PosteriorSummary | None = None
     posterior_maps: PosteriorMaps | None = None
@@ -298,6 +299,7 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
                 "ptt_linear_legacy": self.ptt_linear_legacy,
                 "adipose_component_ids": list(self.adipose_component_ids),
                 "nonadipose_component_ids": list(self.nonadipose_component_ids),
+                "exclude_component_ids": list(self.exclude_component_ids),
             },
             "gmm": None if self.gmm is None else asdict(self.gmm),
             "gmm_components_brief": None if self.gmm is None else [
@@ -306,9 +308,13 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
                     "mu_hu": c.mu_hu,
                     "weight": c.weight,
                     "group": (
-                        "adipose"
-                        if c.component_id in set(self.adipose_component_ids)
-                        else "nonadipose"
+                        "exclude"
+                        if c.component_id in set(self.exclude_component_ids)
+                        else (
+                            "adipose"
+                            if c.component_id in set(self.adipose_component_ids)
+                            else "nonadipose"
+                        )
                     ),
                 }
                 for c in self.gmm.components
@@ -338,6 +344,7 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
             "ptt_linear_legacy": self.ptt_linear_legacy,
             "adipose_component_ids": tuple(self.adipose_component_ids),
             "nonadipose_component_ids": tuple(self.nonadipose_component_ids),
+            "exclude_component_ids": tuple(self.exclude_component_ids),
             "gmm_n_components": None if self.gmm is None else self.gmm.n_components,
             "gmm_converged": None if self.gmm is None else self.gmm.converged,
             "gmm_bic": None if self.gmm is None else self.gmm.bic,
@@ -345,11 +352,14 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
         }
         if self.gmm is not None:
             adipose_ids = set(self.adipose_component_ids)
+            exclude_ids = set(self.exclude_component_ids)
             for c in self.gmm.components:
                 rec[f"gmm_comp{c.component_id}_mu_hu"] = c.mu_hu
                 rec[f"gmm_comp{c.component_id}_weight"] = c.weight
                 rec[f"gmm_comp{c.component_id}_group"] = (
-                    "adipose" if c.component_id in adipose_ids else "nonadipose"
+                    "exclude"
+                    if c.component_id in exclude_ids
+                    else ("adipose" if c.component_id in adipose_ids else "nonadipose")
                 )
         return rec
 
