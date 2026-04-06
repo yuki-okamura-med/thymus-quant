@@ -268,9 +268,15 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
     """
 
     atrq_hu: float | None = None
+    atrq_hu_adjusted: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
     ptt: float | None = None
+    ptt_definition: str | None = None
+    ptt_posterior_primary: float | None = None
+    ptt_linear_legacy: float | None = None
+    adipose_component_ids: Sequence[int] = field(default_factory=tuple)
+    nonadipose_component_ids: Sequence[int] = field(default_factory=tuple)
     gmm: GaussianMixtureFit | None = None
     posterior: PosteriorSummary | None = None
     posterior_maps: PosteriorMaps | None = None
@@ -283,9 +289,15 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
             "meta": None if self.meta is None else asdict(self.meta),
             "summary": {
                 "atrq_hu": self.atrq_hu,
+                "atrq_hu_adjusted": self.atrq_hu_adjusted,
                 "trq_volume_ml": self.trq_volume_ml,
                 "etv_ml": self.etv_ml,
                 "ptt": self.ptt,
+                "ptt_definition": self.ptt_definition,
+                "ptt_posterior_primary": self.ptt_posterior_primary,
+                "ptt_linear_legacy": self.ptt_linear_legacy,
+                "adipose_component_ids": list(self.adipose_component_ids),
+                "nonadipose_component_ids": list(self.nonadipose_component_ids),
             },
             "gmm": None if self.gmm is None else asdict(self.gmm),
             "posterior": None if self.posterior is None else asdict(self.posterior),
@@ -304,9 +316,15 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
             "study_id": self.study_id,
             "method": self.method,
             "atrq_hu": self.atrq_hu,
+            "atrq_hu_adjusted": self.atrq_hu_adjusted,
             "trq_volume_ml": self.trq_volume_ml,
             "etv_ml": self.etv_ml,
             "ptt": self.ptt,
+            "ptt_definition": self.ptt_definition,
+            "ptt_posterior_primary": self.ptt_posterior_primary,
+            "ptt_linear_legacy": self.ptt_linear_legacy,
+            "adipose_component_ids": tuple(self.adipose_component_ids),
+            "nonadipose_component_ids": tuple(self.nonadipose_component_ids),
             "gmm_n_components": None if self.gmm is None else self.gmm.n_components,
             "gmm_converged": None if self.gmm is None else self.gmm.converged,
             "gmm_bic": None if self.gmm is None else self.gmm.bic,
