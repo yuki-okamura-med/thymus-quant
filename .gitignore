@@ -5,4 +5,5 @@ __pycache__/
 .pytest_cache/
 .venv/
 tests/test_images/
-tests/out/
+tests/segmentation_outputs/
+tests/text_outputs/

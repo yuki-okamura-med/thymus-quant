@@ -300,6 +300,19 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
                 "nonadipose_component_ids": list(self.nonadipose_component_ids),
             },
             "gmm": None if self.gmm is None else asdict(self.gmm),
+            "gmm_components_brief": None if self.gmm is None else [
+                {
+                    "component_id": c.component_id,
+                    "mu_hu": c.mu_hu,
+                    "weight": c.weight,
+                    "group": (
+                        "adipose"
+                        if c.component_id in set(self.adipose_component_ids)
+                        else "nonadipose"
+                    ),
+                }
+                for c in self.gmm.components
+            ],
             "posterior": None if self.posterior is None else asdict(self.posterior),
             "posterior_maps": None
             if self.posterior_maps is None
@@ -312,7 +325,7 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
 
     def to_record(self) -> dict[str, Any]:
         """Return flat study-level table record."""
-        return {
+        rec = {
             "study_id": self.study_id,
             "method": self.method,
             "atrq_hu": self.atrq_hu,
@@ -330,6 +343,15 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
             "gmm_bic": None if self.gmm is None else self.gmm.bic,
             "gmm_aic": None if self.gmm is None else self.gmm.aic,
         }
+        if self.gmm is not None:
+            adipose_ids = set(self.adipose_component_ids)
+            for c in self.gmm.components:
+                rec[f"gmm_comp{c.component_id}_mu_hu"] = c.mu_hu
+                rec[f"gmm_comp{c.component_id}_weight"] = c.weight
+                rec[f"gmm_comp{c.component_id}_group"] = (
+                    "adipose" if c.component_id in adipose_ids else "nonadipose"
+                )
+        return rec
 
     def to_frame(self) -> "pd.DataFrame":
         """Return one-row DataFrame."""

@@ -6,7 +6,9 @@ What this script does:
 1) Download one public NIfTI sample to tests/test_images
 2) Run fold-wise TRQ inference (fold-0..fold-4)
 3) Run both quantification methods (okamura, chaunzwa)
-4) Save masks + JSON summary under tests/out
+4) Save outputs in separate directories:
+   - non-text segmentation artifacts -> tests/segmentation_outputs
+   - text/json summaries -> tests/text_outputs
 
 Usage:
   python tests/run_covid_inference_smoke.py
@@ -50,8 +52,10 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     tests_dir = repo_root / "tests"
     image_dir = tests_dir / "test_images"
-    out_dir = tests_dir / "out"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    seg_out_dir = tests_dir / "segmentation_outputs"
+    text_out_dir = tests_dir / "text_outputs"
+    seg_out_dir.mkdir(parents=True, exist_ok=True)
+    text_out_dir.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if os.environ.get("THYQ_FORCE_CPU") != "1" else "cpu"
 
@@ -71,11 +75,11 @@ def main() -> int:
         )
 
         trq_mask = np.asarray(seg.trq_mask)
-        _save_mask(trq_mask, img.affine, out_dir / f"sample_fold{fold_id}_trq_mask.nii.gz")
+        _save_mask(trq_mask, img.affine, seg_out_dir / f"sample_fold{fold_id}_trq_mask.nii.gz")
 
         if seg.members and seg.members[0].airway_mask is not None:
             airway_mask = np.asarray(seg.members[0].airway_mask)
-            _save_mask(airway_mask, img.affine, out_dir / f"sample_fold{fold_id}_airway_mask.nii.gz")
+            _save_mask(airway_mask, img.affine, seg_out_dir / f"sample_fold{fold_id}_airway_mask.nii.gz")
 
         okamura = tq.quantify(seg, method="okamura")
         chaunzwa = tq.quantify(seg, method="chaunzwa")
@@ -85,6 +89,19 @@ def main() -> int:
             "n_trq_voxels": int(trq_mask.sum()),
             "okamura": okamura.to_record(),
             "chaunzwa": chaunzwa.to_record(),
+            "chaunzwa_gmm_components": [
+                {
+                    "component_id": c.component_id,
+                    "mu_hu": c.mu_hu,
+                    "weight": c.weight,
+                    "group": (
+                        "adipose"
+                        if c.component_id in set(chaunzwa.adipose_component_ids)
+                        else "nonadipose"
+                    ),
+                }
+                for c in (chaunzwa.gmm.components if chaunzwa.gmm is not None else [])
+            ],
         }
         fold_results.append(fold_result)
 
@@ -101,9 +118,31 @@ def main() -> int:
         "results": fold_results,
     }
 
-    summary_path = out_dir / "covid_sample_foldwise_summary.json"
+    summary_path = text_out_dir / "covid_sample_foldwise_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"[done] summary -> {summary_path}")
+
+    # lightweight text table for quick inspection
+    lines = [
+        "fold\tokamura_ptt\tokamura_etv_ml\tchaunzwa_ptt\tchaunzwa_etv_ml\tchaunzwa_gmm(mu,pi)",
+    ]
+    for r in fold_results:
+        gmm_brief = ", ".join(
+            [
+                f"c{c['component_id']}:{c['mu_hu']:.2f}/{c['weight']:.3f}:{c['group']}"
+                for c in r["chaunzwa_gmm_components"]
+            ]
+        )
+        lines.append(
+            f"{r['fold_id']}\t"
+            f"{r['okamura'].get('ptt')}\t{r['okamura'].get('etv_ml')}\t"
+            f"{r['chaunzwa'].get('ptt')}\t{r['chaunzwa'].get('etv_ml')}\t"
+            f"{gmm_brief}"
+        )
+    txt_path = text_out_dir / "covid_sample_foldwise_summary.txt"
+    txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print(f"[done] summary json -> {summary_path}")
+    print(f"[done] summary txt  -> {txt_path}")
     return 0
 
 
