@@ -155,8 +155,12 @@ def _component_sets(
     exclude_mu_hu_below: float,
     exclude_mu_hu_above: float,
 ) -> tuple[set[int], set[int], set[int]]:
-    """Split components into adipose / nonadipose / exclude sets."""
-    all_ids = set(range(len(mus)))
+    """Split components into adipose / nonadipose / exclude sets.
+
+    Rule requested in this project:
+    - first mark exclude components by HU bounds
+    - among non-excluded components, the lowest-mean component is adipose
+    """
     exclude_ids = {
         int(i)
         for i, mu in enumerate(mus)
@@ -167,14 +171,12 @@ def _component_sets(
     if not candidate_ids:
         return set(), set(), exclude_ids
 
-    adipose_ids: set[int] = set()
-    lowest = candidate_ids[0]
-    if float(mus[lowest]) <= float(aadipose_hu):
-        adipose_ids.add(lowest)
-        if policy == "lowest_plus_subfat":
-            for i in candidate_ids[1:]:
-                if float(mus[i]) <= float(aadipose_hu):
-                    adipose_ids.add(i)
+    adipose_ids: set[int] = {candidate_ids[0]}
+
+    if policy == "lowest_plus_subfat":
+        for i in candidate_ids[1:]:
+            if float(mus[i]) <= float(aadipose_hu):
+                adipose_ids.add(i)
 
     nonadipose_ids = set(candidate_ids) - adipose_ids
     return adipose_ids, nonadipose_ids, exclude_ids
