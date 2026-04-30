@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thymus-quant"
+version = "0.1.0a0"
+description = "Thymic quantification toolkit (Okamura / Chaunzwa)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "nibabel>=5.0",
+  "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+segmentation = [
+  "huggingface_hub>=0.23",
+  "safetensors>=0.4",
+  "torch>=2.0",
+  "torchvision>=0.15",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
