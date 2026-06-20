@@ -49,7 +49,7 @@ def test_heuristic_is_explicit_and_warns(tmp_path):
 
 def test_model_load_failure_does_not_fallback(monkeypatch):
     seg = tq.load_segmentor("trqseg_v1", members=[0], local_files_only=True)
-    monkeypatch.setattr(seg, "_ensure_models_loaded", lambda: None)
+    monkeypatch.setattr(type(seg), "_ensure_models_loaded", lambda self: None)
     img = make_image_context(ct_hu=np.zeros((4, 4, 4)), spacing_mm=(1, 1, 1))
     with pytest.raises(RuntimeError, match="heuristic fallback is disabled"):
         seg.segment_trq(img, study_id="s")

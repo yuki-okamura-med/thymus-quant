@@ -51,7 +51,7 @@ def test_kde_exception_is_not_median_mode(monkeypatch):
 def test_valid_and_invalid_member_mixture_uses_valid_summary():
     ct1 = np.full((6, 6, 6), -15.0)
     ct2 = ct1.copy()
-    ct2[1:-1, 1:-1, 1:-1] = np.tile(np.array([-100.0, 50.0]), 32)
+    ct2[1:-1, 1:-1, 1:-1] = np.tile(np.array([-100.0, 50.0]), 32).reshape(4, 4, 4)
     masks = [_mask(), _mask()]
     seg = _seg(ct2, masks=masks)
     result = tq.quantify(seg, method="okamura", options=tq.OkamuraOptions(second_peak_ratio_threshold=-1.0))
