@@ -11,6 +11,7 @@ This module defines:
 
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
+import math
 from typing import TYPE_CHECKING, Any, Literal, Sequence, TypeAlias
 
 if TYPE_CHECKING:
@@ -20,8 +21,20 @@ if TYPE_CHECKING:
 
 MethodName: TypeAlias = Literal["okamura", "chaunzwa"]
 DetailLevel: TypeAlias = Literal["summary", "full"]
-QCStatus: TypeAlias = Literal["ok", "check", "not_available"]
+ResultStatus: TypeAlias = Literal["ok", "check", "failed", "not_available"]
+QCStatus: TypeAlias = ResultStatus
 OnError: TypeAlias = Literal["raise", "record", "skip"]
+
+
+def _json_safe(x: Any) -> Any:
+    """Recursively replace NaN/Inf with None for JSON-safe serialization."""
+    if isinstance(x, float):
+        return x if math.isfinite(x) else None
+    if isinstance(x, dict):
+        return {k: _json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_json_safe(v) for v in x]
+    return x
 
 
 def _df(records: list[dict[str, Any]]):
@@ -49,8 +62,18 @@ class ResultMeta:
     input_source: str | None = None
     segmentor_name: str | None = None
     segmentor_repo_id: str | None = None
+    segmentor_requested_revision: str | None = None
     segmentor_revision: str | None = None
     segmentor_members: tuple[str, ...] = ()
+    segmentor_weight_source: str | None = None
+    segmentor_local_source: str | None = None
+    preprocessing_version: str | None = None
+    image_shape: tuple[int, int, int] | None = None
+    spacing_mm: tuple[float, float, float] | None = None
+    orientation: tuple[str, str, str] | None = None
+    method_version: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+    experimental: bool = False
     library_version: str | None = None
 
 
@@ -62,6 +85,7 @@ class BatchErrorRecord:
     study_id: str | None = None
     error_type: str | None = None
     message: str | None = None
+    input_index: int | None = None
 
 
 @dataclass(slots=True)
@@ -72,6 +96,10 @@ class AnalysisResultBase(ABC):
     method: MethodName | None = None
     meta: ResultMeta | None = None
     segmentation: SegmentationResult | None = None
+    status: ResultStatus = "not_available"
+    flags: Sequence[str] = field(default_factory=tuple)
+    warnings: Sequence[str] = field(default_factory=tuple)
+    failure_reason: str | None = None
 
     @abstractmethod
     def to_dict(self) -> dict[str, Any]:
@@ -99,6 +127,9 @@ class OkamuraQC:
     mean_pairwise_jsd: float | None = None
     mean_pairwise_dsc: float | None = None
     hu_variance: float | None = None
+    expected_member_count: int | None = None
+    supplied_member_count: int = 0
+    computed_member_count: int = 0
     valid_member_count: int = 0
 
 
@@ -120,6 +151,8 @@ class OkamuraMemberResult:
     etv_fraction_adjusted: float | None = None
     atrq_below_aadipose: bool | None = None
     second_peak_ratio: float | None = None
+    flags: Sequence[str] = field(default_factory=tuple)
+    failure_reason: str | None = None
     trq_mask: Any | None = None
     airway_mask: Any | None = None
 
@@ -151,9 +184,13 @@ class AnalysisResultOkamura(AnalysisResultBase):
 
     def to_dict(self) -> dict[str, Any]:
         """Return nested representation with optional member-level payload."""
-        return {
+        return _json_safe({
             "study_id": self.study_id,
             "method": self.method,
+            "status": self.status,
+            "flags": list(self.flags),
+            "warnings": list(self.warnings),
+            "failure_reason": self.failure_reason,
             "meta": None if self.meta is None else asdict(self.meta),
             "summary": {
                 "trq_hu_mode": self.trq_hu_mode,
@@ -181,16 +218,21 @@ class AnalysisResultOkamura(AnalysisResultBase):
                     "etv_fraction_adjusted": m.etv_fraction_adjusted,
                     "atrq_below_aadipose": m.atrq_below_aadipose,
                     "second_peak_ratio": m.second_peak_ratio,
+                    "flags": list(m.flags),
+                    "failure_reason": m.failure_reason,
                 }
                 for m in self.members
             ],
-        }
+        })
 
     def to_record(self) -> dict[str, Any]:
         """Return flat study-level table record."""
         return {
             "study_id": self.study_id,
             "method": self.method,
+            "status": self.status,
+            "flags": tuple(self.flags),
+            "failure_reason": self.failure_reason,
             "trq_hu_mode": self.trq_hu_mode,
             "trq_volume_ml": self.trq_volume_ml,
             "etv_ml": self.etv_ml,
@@ -284,9 +326,13 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
 
     def to_dict(self) -> dict[str, Any]:
         """Return nested representation with optional GMM/posterior payload."""
-        return {
+        return _json_safe({
             "study_id": self.study_id,
             "method": self.method,
+            "status": self.status,
+            "flags": list(self.flags),
+            "warnings": list(self.warnings),
+            "failure_reason": self.failure_reason,
             "meta": None if self.meta is None else asdict(self.meta),
             "summary": {
                 "atrq_hu": self.atrq_hu,
@@ -327,13 +373,16 @@ class AnalysisResultChaunzwa(AnalysisResultBase):
                 "tissue_keys": sorted(self.posterior_maps.tissue_posteriors.keys()),
                 "has_hard_labels": self.posterior_maps.hard_component_labels is not None,
             },
-        }
+        })
 
     def to_record(self) -> dict[str, Any]:
         """Return flat study-level table record."""
         rec = {
             "study_id": self.study_id,
             "method": self.method,
+            "status": self.status,
+            "flags": tuple(self.flags),
+            "failure_reason": self.failure_reason,
             "atrq_hu": self.atrq_hu,
             "atrq_hu_adjusted": self.atrq_hu_adjusted,
             "trq_volume_ml": self.trq_volume_ml,
@@ -374,11 +423,20 @@ class BatchAnalysisResultBase(ABC):
 
     method: MethodName
     errors: Sequence[BatchErrorRecord] = field(default_factory=tuple)
+    n_requested: int = 0
 
     @abstractmethod
     def to_frame(self) -> "pd.DataFrame":
         """Return study-level summary table."""
         raise NotImplementedError
+
+    @property
+    def n_failed(self) -> int:
+        return len(self.errors)
+
+    def errors_to_frame(self) -> "pd.DataFrame":
+        """Return one row per recorded batch error."""
+        return _df([asdict(e) for e in self.errors])
 
 
 @dataclass(slots=True)
@@ -386,6 +444,10 @@ class BatchAnalysisResultOkamura(BatchAnalysisResultBase):
     """Batch output container for Okamura analyses."""
 
     results: Sequence[AnalysisResultOkamura] = field(default_factory=tuple)
+
+    @property
+    def n_succeeded(self) -> int:
+        return len(self.results)
 
     def to_frame(self) -> "pd.DataFrame":
         """Return one row per study."""
@@ -418,6 +480,10 @@ class BatchAnalysisResultChaunzwa(BatchAnalysisResultBase):
     """Batch output container for Chaunzwa analyses."""
 
     results: Sequence[AnalysisResultChaunzwa] = field(default_factory=tuple)
+
+    @property
+    def n_succeeded(self) -> int:
+        return len(self.results)
 
     def to_frame(self) -> "pd.DataFrame":
         """Return one row per study."""

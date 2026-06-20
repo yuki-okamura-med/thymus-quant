@@ -17,6 +17,17 @@ from .api import (
     quantify,
     segment_trq,
 )
+from ._version import __version__
+from .exceptions import (
+    ExperimentalWarning,
+    InputValidationError,
+    MissingGeometryError,
+    NumericalError,
+    QuantificationError,
+    SegmentorConfigurationError,
+    ThymusQuantError,
+)
+from .inputs import ImageContext
 from .quantification.chaunzwa import ChaunzwaOptions
 from .quantification.okamura import OkamuraOptions
 from .results import (
@@ -52,19 +63,27 @@ __all__ = [
     "BatchAnalysisResultOkamura",
     "BatchErrorRecord",
     "ChaunzwaOptions",
+    "ExperimentalWarning",
     "GaussianMixtureFit",
     "GMMComponent",
+    "ImageContext",
+    "InputValidationError",
     "LoadedSegmentor",
+    "MissingGeometryError",
+    "NumericalError",
     "OkamuraMemberResult",
     "OkamuraOptions",
     "OkamuraQC",
     "PosteriorMaps",
     "PosteriorSummary",
+    "QuantificationError",
     "ResultMeta",
     "SegmentationMember",
     "SegmentationResult",
     "SegmentorInfo",
     "SegmentorMember",
+    "SegmentorConfigurationError",
+    "ThymusQuantError",
     "analyze",
     "analyze_many",
     "list_methods",
@@ -72,6 +91,5 @@ __all__ = [
     "load_segmentor",
     "quantify",
     "segment_trq",
+    "__version__",
 ]
-
-__version__ = "0.1.0a0"

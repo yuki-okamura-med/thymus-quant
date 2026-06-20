@@ -6,16 +6,20 @@ This module provides:
 - `LoadedSegmentor`: runtime handle for a segmentation backend
 - lightweight data classes that describe segmentor metadata and outputs
 - TRQ segmentation using `TRQseg-v1` (DeepLabV3-ResNet50) when available
-- heuristic fallback segmentation for environments without NN dependencies
+- explicit heuristic segmentation for debug environments
 """
 
 import os
+import warnings
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Sequence, TypeAlias, Union
 
 import nibabel as nib
 import numpy as np
+
+from .exceptions import SegmentorConfigurationError
+from .inputs import ImageContext, load_image_context, make_image_context, validate_binary_mask, validate_mask_has_finite_ct
 
 if TYPE_CHECKING:
     ImageInput: TypeAlias = Union[str, os.PathLike[str], nib.spatialimages.SpatialImage]
@@ -31,7 +35,7 @@ def _load_image(image: ImageInput) -> nib.spatialimages.SpatialImage:
 
 
 def _simple_trq_segmentation(ct: np.ndarray) -> np.ndarray:
-    """Compute simple heuristic TRQ mask when NN backend is unavailable."""
+    """Compute simple debug-only heuristic TRQ mask."""
     finite = np.isfinite(ct)
     mask = finite & (ct > -250) & (ct < 200)
     if mask.sum() == 0:
@@ -64,6 +68,9 @@ class SegmentorMember:
     relative_path: str | None = None
     local_path: str | None = None
     revision: str | None = None
+    resolved_revision: str | None = None
+    weight_source: Literal["local", "downloaded", "unknown"] = "unknown"
+    checksum: str | None = None
 
 
 @dataclass(slots=True)
@@ -79,6 +86,9 @@ class SegmentorInfo:
     available_members: tuple[str, ...] = ()
     selected_members: tuple[str, ...] = ()
     cache_dir: str | None = None
+    weight_source: Literal["local", "downloaded", "mixed", "none", "unknown"] = "unknown"
+    local_source: str | None = None
+    preprocessing_version: str | None = None
 
 
 @dataclass(slots=True)
@@ -89,7 +99,8 @@ class LoadedSegmentor:
     -----
     - Models are loaded only once per instance (`_ensure_models_loaded`).
     - A lock protects concurrent first-load calls.
-    - If NN dependencies are unavailable, heuristic fallback can still run.
+    - NN load/inference failures are reported; they do not silently fall back to
+      the heuristic backend.
     """
 
     info: SegmentorInfo
@@ -111,6 +122,7 @@ class LoadedSegmentor:
     def _resolve_weight_path(self, member: SegmentorMember) -> str:
         """Resolve local or Hub path for one member's weight file."""
         if member.local_path and os.path.exists(member.local_path):
+            member.weight_source = "local"
             return member.local_path
 
         if not self.info.repo_id:
@@ -134,6 +146,7 @@ class LoadedSegmentor:
             local_files_only=self.local_files_only,
         )
         member.local_path = path
+        member.weight_source = "downloaded"
         return path
 
     def _ensure_models_loaded(self) -> None:
@@ -206,8 +219,8 @@ class LoadedSegmentor:
         SegmentationResult
             Includes representative/fused mask and member-level masks.
         """
-        img = _load_image(image)
-        ct = np.asarray(img.get_fdata(), dtype=np.float32)
+        context = load_image_context(image)
+        ct = np.asarray(context.ct_hu, dtype=np.float32)
 
         self._ensure_models_loaded()
 
@@ -236,12 +249,27 @@ class LoadedSegmentor:
                         member_id=m.member_id,
                         trq_mask=trq,
                         airway_mask=airway,
-                        raw_output={"backend": "hf_trqseg_v1", "ct_array": ct, "ct_image": img},
+                        raw_output={
+                            "backend": "hf_trqseg_v1",
+                            "preprocessing_version": self.info.preprocessing_version,
+                            "input_shape": tuple(ct.shape),
+                            "output_grid": "input",
+                        },
                     )
                 )
 
-        # fallback path (heuristic)
+        # explicit heuristic path
         if not member_outputs:
+            if self.info.name != "heuristic_trq":
+                raise RuntimeError(
+                    f"Segmentor '{self.info.name}' produced no member outputs; heuristic fallback is disabled. "
+                    "Choose segmentor='heuristic_trq' explicitly for debug-only heuristic segmentation."
+                )
+            warnings.warn(
+                "heuristic_trq is a debug/experimental segmentor and is not the validated TRQseg-v1 research model.",
+                UserWarning,
+                stacklevel=2,
+            )
             for m in self.members or (SegmentorMember(member_id="single"),):
                 trq = _simple_trq_segmentation(ct)
                 member_outputs.append(
@@ -249,7 +277,7 @@ class LoadedSegmentor:
                         member_id=m.member_id,
                         trq_mask=trq,
                         airway_mask=None,
-                        raw_output={"backend": "heuristic", "ct_array": ct, "ct_image": img},
+                        raw_output={"backend": "heuristic", "input_shape": tuple(ct.shape), "output_grid": "input"},
                     )
                 )
 
@@ -262,6 +290,7 @@ class LoadedSegmentor:
         return SegmentationResult(
             study_id=study_id,
             segmentor=self.info,
+            image=context,
             trq_mask=fused,
             airway_mask=None,
             members=tuple(member_outputs),
@@ -285,10 +314,90 @@ class SegmentationResult:
 
     study_id: str | None = None
     segmentor: SegmentorInfo | None = None
+    image: ImageContext | None = None
     trq_mask: Any | None = None
     airway_mask: Any | None = None
     members: Sequence[SegmentationMember] = field(default_factory=tuple)
     merge_strategy: Literal["none", "vote", "union", "intersection", "custom"] = "none"
+
+    @classmethod
+    def from_mask(
+        cls,
+        *,
+        trq_mask: Any,
+        ct_hu: Any,
+        spacing_mm: tuple[float, float, float],
+        study_id: str | None = None,
+        affine: Any | None = None,
+        source: str | None = None,
+        orientation: tuple[str, str, str] | None = None,
+    ) -> "SegmentationResult":
+        """Build a segmentation result from one external TRQ mask."""
+        context = make_image_context(
+            ct_hu=ct_hu,
+            spacing_mm=spacing_mm,
+            affine=affine,
+            source=source,
+            orientation=orientation,
+        )
+        mask = validate_binary_mask(trq_mask, ct_shape=context.shape, name="trq_mask")
+        validate_mask_has_finite_ct(mask, np.asarray(context.ct_hu), name="trq_mask")
+        member = SegmentationMember(member_id="single", trq_mask=mask, raw_output={"backend": "external_mask"})
+        return cls(
+            study_id=study_id,
+            segmentor=None,
+            image=context,
+            trq_mask=mask,
+            members=(member,),
+            merge_strategy="none",
+        )
+
+    @classmethod
+    def from_member_masks(
+        cls,
+        *,
+        member_masks: Sequence[Any],
+        ct_hu: Any,
+        spacing_mm: tuple[float, float, float],
+        study_id: str | None = None,
+        member_ids: Sequence[str] | None = None,
+        affine: Any | None = None,
+        source: str | None = None,
+        orientation: tuple[str, str, str] | None = None,
+    ) -> "SegmentationResult":
+        """Build a segmentation result from multiple external member masks."""
+        if not member_masks:
+            raise SegmentorConfigurationError("from_member_masks requires at least one member mask")
+        context = make_image_context(
+            ct_hu=ct_hu,
+            spacing_mm=spacing_mm,
+            affine=affine,
+            source=source,
+            orientation=orientation,
+        )
+        ids = tuple(member_ids) if member_ids is not None else tuple(f"member-{i}" for i in range(len(member_masks)))
+        if len(ids) != len(member_masks):
+            raise SegmentorConfigurationError("member_ids length must match member_masks length")
+        if len(set(ids)) != len(ids):
+            raise SegmentorConfigurationError("member_ids must be unique")
+        masks = []
+        members = []
+        for i, (member_id, raw_mask) in enumerate(zip(ids, member_masks)):
+            mask = validate_binary_mask(raw_mask, ct_shape=context.shape, name=f"member_masks[{i}]")
+            validate_mask_has_finite_ct(mask, np.asarray(context.ct_hu), name=f"member_masks[{i}]")
+            masks.append(mask)
+            members.append(
+                SegmentationMember(member_id=str(member_id), trq_mask=mask, raw_output={"backend": "external_mask"})
+            )
+        fused = (np.mean(np.stack(masks, axis=0), axis=0) >= 0.5)
+        return cls(
+            study_id=study_id,
+            segmentor=None,
+            image=context,
+            trq_mask=fused,
+            members=tuple(members),
+            merge_strategy="vote" if len(members) > 1 else "none",
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Return lightweight JSON-friendly segmentation summary."""
@@ -299,8 +408,20 @@ class SegmentationResult:
             else {
                 "name": self.segmentor.name,
                 "repo_id": self.segmentor.repo_id,
+                "requested_revision": self.segmentor.requested_revision,
                 "resolved_revision": self.segmentor.resolved_revision,
                 "selected_members": list(self.segmentor.selected_members),
+                "weight_source": self.segmentor.weight_source,
+                "local_source": self.segmentor.local_source,
+                "preprocessing_version": self.segmentor.preprocessing_version,
+            },
+            "image": None
+            if self.image is None
+            else {
+                "shape": list(self.image.shape),
+                "spacing_mm": list(self.image.spacing_mm),
+                "orientation": None if self.image.orientation is None else list(self.image.orientation),
+                "source": self.image.source,
             },
             "merge_strategy": self.merge_strategy,
             "n_members": len(self.members),

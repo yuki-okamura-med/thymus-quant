@@ -9,11 +9,13 @@ Paper-faithful primary definition:
 """
 
 import math
+import warnings
 from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
 
+from ..exceptions import ExperimentalWarning, MissingGeometryError
 from ..results import (
     AnalysisResultChaunzwa,
     DetailLevel,
@@ -24,11 +26,16 @@ from ..results import (
     ResultMeta,
 )
 from ..segmentors import SegmentationResult
+from .common import spacing_voxel_volume_ml
 
 
 @dataclass(slots=True)
 class ChaunzwaOptions:
-    """Configuration for the Chaunzwa quantification method."""
+    """Configuration for the experimental Chaunzwa quantification method.
+
+    Chaunzwa support is experimental and is not validated as a primary
+    collaborative endpoint in this package version.
+    """
 
     aadipose_hu: float = -110.0
     athymic_hu: float = 80.0
@@ -189,19 +196,37 @@ def quantify_chaunzwa(
     detail: DetailLevel,
     meta: ResultMeta | None,
 ) -> AnalysisResultChaunzwa:
-    """Run Chaunzwa quantification using posterior-based pTT definition."""
+    """Run experimental Chaunzwa quantification using posterior-based pTT definition."""
+    warnings.warn(
+        "Chaunzwa quantification is experimental; API and numerical behavior may change.",
+        ExperimentalWarning,
+        stacklevel=2,
+    )
+    if meta is not None:
+        meta.experimental = True
     if segmentation.trq_mask is None:
         raise ValueError("segmentation.trq_mask is required")
 
     mask = np.asarray(segmentation.trq_mask)
 
     ct = None
-    img = None
-    if segmentation.members and isinstance(segmentation.members[0].raw_output, dict):
+    spacing_mm = None
+    if segmentation.image is not None:
+        ct = segmentation.image.ct_hu
+        spacing_mm = segmentation.image.spacing_mm
+    elif segmentation.members and isinstance(segmentation.members[0].raw_output, dict):
+        warnings.warn(
+            "Reading CT from SegmentationMember.raw_output['ct_array'] is deprecated; use SegmentationResult.image.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         ct = segmentation.members[0].raw_output.get("ct_array")
         img = segmentation.members[0].raw_output.get("ct_image")
+        spacing_mm = None if img is None else img.header.get_zooms()[:3]
     if ct is None:
         raise ValueError("CT array is missing for Chaunzwa quantification")
+    if spacing_mm is None:
+        raise MissingGeometryError("spacing_mm is required for Chaunzwa volume/ETV computation")
 
     vals = np.asarray(ct, dtype=float)[mask > 0]
     vals = vals[np.isfinite(vals)]
@@ -276,11 +301,7 @@ def quantify_chaunzwa(
 
     ptt = ptt_linear_percent if options.ptt_definition == "atrq_linear" else ptt_posterior_percent
 
-    voxel_ml = (
-        float("nan")
-        if img is None
-        else (img.header.get_zooms()[0] * img.header.get_zooms()[1] * img.header.get_zooms()[2]) / 1000.0
-    )
+    voxel_ml = spacing_voxel_volume_ml(spacing_mm)
 
     # effective TRQ volume excludes component posterior assigned to exclude set
     trq_vol = float(included_mass_total * voxel_ml)
@@ -371,6 +392,9 @@ def quantify_chaunzwa(
         method="chaunzwa",
         meta=meta,
         segmentation=(segmentation if detail == "full" else None),
+        status="check",
+        flags=("experimental",),
+        warnings=("Chaunzwa quantification is experimental and not validated as a primary endpoint.",),
         atrq_hu=atrq,
         atrq_hu_adjusted=atrq_adjusted,
         trq_volume_ml=trq_vol,

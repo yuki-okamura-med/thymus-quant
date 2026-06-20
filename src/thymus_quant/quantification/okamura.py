@@ -3,11 +3,14 @@ from __future__ import annotations
 """Okamura-method quantification implementation."""
 
 from dataclasses import dataclass
+import warnings
 
 import nibabel as nib
 import numpy as np
 from scipy.stats import gaussian_kde
 
+from ..exceptions import MissingGeometryError, NumericalError
+from ..inputs import validate_binary_mask, validate_mask_has_finite_ct
 from ..results import AnalysisResultOkamura, DetailLevel, OkamuraMemberResult, OkamuraQC, ResultMeta
 from ..segmentors import SegmentationResult
 from .common import dice, voxvol_ml
@@ -41,7 +44,7 @@ def _kde_mode_and_second_ratio(values: np.ndarray, grid_points: int = 2048) -> t
     vals = np.asarray(values, dtype=float)
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
-        return float("nan"), float("nan")
+        raise NumericalError("KDE input has no finite values")
 
     uniq = np.unique(vals)
     if uniq.size == 1:
@@ -56,12 +59,11 @@ def _kde_mode_and_second_ratio(values: np.ndarray, grid_points: int = 2048) -> t
     try:
         kde = gaussian_kde(vals)
         dens = np.asarray(kde(grid), dtype=float)
-    except Exception:
-        # conservative fallback if KDE fails due singular covariance
-        return float(np.median(vals)), 0.0
+    except Exception as e:
+        raise NumericalError(f"KDE failed: {type(e).__name__}: {e}") from e
 
     if dens.size == 0 or not np.isfinite(dens).any():
-        return float(np.median(vals)), 0.0
+        raise NumericalError("KDE produced no finite density values")
 
     mode = float(grid[int(np.nanargmax(dens))])
 
@@ -140,6 +142,23 @@ def _extract_member_ct_and_img(member) -> tuple[np.ndarray, nib.spatialimages.Sp
     return np.asarray(ct), img
 
 
+def _extract_ct_and_spacing(segmentation: SegmentationResult, member) -> tuple[np.ndarray, tuple[float, float, float], nib.spatialimages.SpatialImage | None]:
+    """Extract public ImageContext, with deprecated raw_output fallback."""
+    if segmentation.image is not None:
+        return np.asarray(segmentation.image.ct_hu), segmentation.image.spacing_mm, None
+    if isinstance(member.raw_output, dict) and "ct_array" in member.raw_output:
+        warnings.warn(
+            "Reading CT from SegmentationMember.raw_output['ct_array'] is deprecated; use SegmentationResult.image.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        ct, img = _extract_member_ct_and_img(member)
+        if img is None:
+            raise MissingGeometryError("spacing_mm is required; deprecated raw_output fallback has no ct_image")
+        return ct, img.header.get_zooms()[:3], img
+    raise MissingGeometryError("SegmentationResult.image with ct_hu and spacing_mm is required for Okamura quantification")
+
+
 def _as_summary_member(member: OkamuraMemberResult) -> OkamuraMemberResult:
     return OkamuraMemberResult(
         member_id=member.member_id,
@@ -151,6 +170,8 @@ def _as_summary_member(member: OkamuraMemberResult) -> OkamuraMemberResult:
         etv_fraction_adjusted=member.etv_fraction_adjusted,
         atrq_below_aadipose=member.atrq_below_aadipose,
         second_peak_ratio=member.second_peak_ratio,
+        flags=member.flags,
+        failure_reason=member.failure_reason,
     )
 
 
@@ -175,19 +196,51 @@ def quantify_okamura(
     ptts: list[float] = []
     atrq_below_flags: list[bool] = []
     valid_mask: list[bool] = []
+    computed_mask: list[bool] = []
     values_list: list[np.ndarray] = []
     masks: list[np.ndarray] = []
 
     for m in members:
-        mask = np.asarray(m.trq_mask)
-        masks.append(mask)
+        member_flags: list[str] = []
+        failure_reason = None
+        try:
+            ct, spacing, img = _extract_ct_and_spacing(segmentation, m)
+            mask = validate_binary_mask(m.trq_mask, ct_shape=tuple(ct.shape), name=f"member {m.member_id} trq_mask")
+            validate_mask_has_finite_ct(mask, ct, name=f"member {m.member_id} trq_mask")
+            vals = np.asarray(ct, dtype=float)[mask]
+            vals = vals[np.isfinite(vals)]
+            mode, second_ratio = _kde_mode_and_second_ratio(vals)
+            vol = voxvol_ml(mask, img, spacing_mm=spacing)
+            computed = True
+        except Exception as e:
+            mask = np.asarray(m.trq_mask)
+            vals = np.array([], dtype=float)
+            mode = None
+            second_ratio = None
+            vol = None
+            computed = False
+            failure_reason = f"{type(e).__name__}: {e}"
+            member_flags.append("computation_failed")
+            if isinstance(e, NumericalError):
+                member_flags.append("kde_failed")
 
-        ct, img = _extract_member_ct_and_img(m)
-        vals = ct[mask > 0]
+        masks.append(mask)
         values_list.append(vals)
 
-        mode, second_ratio = _kde_mode_and_second_ratio(vals)
-        vol = voxvol_ml(mask, img)
+        if not computed:
+            member_results.append(
+                OkamuraMemberResult(
+                    member_id=m.member_id,
+                    valid=False,
+                    flags=tuple(member_flags),
+                    failure_reason=failure_reason,
+                    trq_mask=(m.trq_mask if detail == "full" else None),
+                    airway_mask=(m.airway_mask if detail == "full" else None),
+                )
+            )
+            computed_mask.append(False)
+            valid_mask.append(False)
+            continue
 
         ptt_fraction = float(
             np.clip((mode - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0)
@@ -202,6 +255,8 @@ def quantify_okamura(
 
         atrq_below = bool(np.isfinite(mode) and (mode < options.aadipose_hu))
         valid = bool(np.isfinite(mode) and (second_ratio <= options.second_peak_ratio_threshold))
+        if not valid:
+            member_flags.append("multimodal_or_invalid")
 
         member_results.append(
             OkamuraMemberResult(
@@ -214,6 +269,8 @@ def quantify_okamura(
                 etv_fraction_adjusted=etv_frac,
                 atrq_below_aadipose=atrq_below,
                 second_peak_ratio=float(second_ratio),
+                flags=tuple(member_flags),
+                failure_reason=failure_reason,
                 trq_mask=(m.trq_mask if detail == "full" else None),
                 airway_mask=(m.airway_mask if detail == "full" else None),
             )
@@ -225,9 +282,11 @@ def quantify_okamura(
         ptts.append(ptt)
         atrq_below_flags.append(atrq_below)
         valid_mask.append(valid)
+        computed_mask.append(True)
 
     valid_indices = [i for i, v in enumerate(valid_mask) if v]
-    use_indices = valid_indices if valid_indices else list(range(len(member_results)))
+    computed_indices = [i for i, v in enumerate(computed_mask) if v]
+    use_indices = valid_indices if valid_indices else computed_indices
 
     trq_hu = float(np.median([modes[i] for i in use_indices])) if use_indices else None
     trq_vol = float(np.median([vols[i] for i in use_indices])) if use_indices else None
@@ -238,12 +297,15 @@ def quantify_okamura(
     mean_dsc = None
     hu_var = None
     flags: list[str] = []
+    warnings_out: list[str] = []
 
-    if len(member_results) >= 2:
+    if len(use_indices) >= 2:
         jsds: list[float] = []
         dscs: list[float] = []
-        for i in range(len(member_results)):
-            for j in range(i + 1, len(member_results)):
+        for a in range(len(use_indices)):
+            for b in range(a + 1, len(use_indices)):
+                i = use_indices[a]
+                j = use_indices[b]
                 if values_list[i].size and values_list[j].size:
                     jsds.append(_jsd_from_values(values_list[i], values_list[j]))
                 dscs.append(dice(masks[i], masks[j]))
@@ -253,6 +315,13 @@ def quantify_okamura(
 
     if options.invalidate_if_any_member_invalid and member_results and (not all(valid_mask)):
         flags.append("invalid_member")
+    if any("kde_failed" in m.flags for m in member_results):
+        flags.append("kde_failed")
+    if len(member_results) > 0 and len(valid_indices) == 0 and len(computed_indices) > 0:
+        flags.extend(["all_members_invalid", "used_invalid_members"])
+        warnings_out.append("All members failed QC but had computable numeric values; summary uses invalid members and status is check.")
+    elif len(valid_indices) < len(computed_indices):
+        flags.append("excluded_invalid_members")
     if options.apply_qc:
         if mean_jsd is not None and mean_jsd >= options.js_divergence_threshold:
             flags.append("high_jsd")
@@ -261,20 +330,30 @@ def quantify_okamura(
         if hu_var is not None and hu_var >= options.hu_variance_threshold:
             flags.append("high_hu_variance")
 
-    if len(member_results) == 0:
-        qc_status = "not_available"
+    if len(member_results) == 0 or not computed_indices:
+        qc_status = "failed" if member_results else "not_available"
+        met = None
+    elif len(use_indices) < 2:
+        flags.append("ensemble_qc_unavailable")
+        qc_status = "check"
         met = None
     else:
         met = len(flags) == 0
         qc_status = "ok" if met else "check"
+    if "used_invalid_members" in flags or "invalid_member" in flags:
+        met = False if met is True else met
+        qc_status = "check" if qc_status != "failed" else qc_status
 
     qc = OkamuraQC(
         status=qc_status,
         paper_criteria_met=met,
-        flags=tuple(flags),
+        flags=tuple(dict.fromkeys(flags)),
         mean_pairwise_jsd=mean_jsd,
         mean_pairwise_dsc=mean_dsc,
         hu_variance=hu_var,
+        expected_member_count=None if segmentation.segmentor is None else len(segmentation.segmentor.selected_members),
+        supplied_member_count=len(member_results),
+        computed_member_count=len(computed_indices),
         valid_member_count=len(valid_indices),
     )
 
@@ -285,6 +364,10 @@ def quantify_okamura(
         method="okamura",
         meta=meta,
         segmentation=(segmentation if detail == "full" else None),
+        status=qc_status,
+        flags=tuple(dict.fromkeys(flags)),
+        warnings=tuple(warnings_out),
+        failure_reason=None if computed_indices else "No member had computable Okamura values",
         trq_hu_mode=trq_hu,
         trq_volume_ml=trq_vol,
         etv_ml=etv,

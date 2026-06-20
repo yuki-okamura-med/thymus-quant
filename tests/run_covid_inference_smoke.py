@@ -10,6 +10,9 @@ What this script does:
    - non-text segmentation artifacts -> tests/segmentation_outputs
    - text/json summaries -> tests/text_outputs
 
+This is an explicit integration script. It requires network access, real model
+weights, and optional CUDA. It is not part of the default unit test suite.
+
 Usage:
   python tests/run_covid_inference_smoke.py
 """
@@ -57,7 +60,7 @@ def main() -> int:
     seg_out_dir.mkdir(parents=True, exist_ok=True)
     text_out_dir.mkdir(parents=True, exist_ok=True)
 
-    device = "cuda" if os.environ.get("THYQ_FORCE_CPU") != "1" else "cpu"
+    device = os.environ.get("THYQ_DEVICE", "auto")
 
     sample_path = _ensure_sample(image_dir)
     img = nib.load(str(sample_path))
