@@ -16,7 +16,6 @@ from typing import Literal, Sequence, overload
 
 from .exceptions import SegmentorConfigurationError
 from ._version import __version__
-from .quantification.chaunzwa import ChaunzwaOptions
 from .quantification.okamura import OkamuraOptions, quantify_okamura
 from .results import (
     AnalysisResultBase,
@@ -62,18 +61,14 @@ def _validate_on_error(on_error: str, *, function: str) -> OnError:
     return on_error  # type: ignore[return-value]
 
 
-def _validate_options(method: MethodName, options: OkamuraOptions | ChaunzwaOptions | None, *, function: str, study_id: str | None = None):
+def _validate_options(method: MethodName, options: OkamuraOptions | None, *, function: str, study_id: str | None = None):
     if method == "okamura":
         if options is not None and not isinstance(options, OkamuraOptions):
             raise TypeError(
                 f"{function}(study_id={study_id!r}, method='okamura') requires OkamuraOptions or None; got {type(options).__name__}"
             )
         return options if options is not None else OkamuraOptions()
-    if options is not None and not isinstance(options, ChaunzwaOptions):
-        raise TypeError(
-            f"{function}(study_id={study_id!r}, method='chaunzwa') requires ChaunzwaOptions or None; got {type(options).__name__}"
-        )
-    return options if options is not None else ChaunzwaOptions()
+    raise ValueError(f"Unsupported method: {method}")
 
 
 def list_segmentors() -> dict[str, SegmentorInfo]:
@@ -339,7 +334,7 @@ def quantify(
     segmentation: SegmentationResult,
     *,
     method: MethodName,
-    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
 ) -> AnalysisResultBase:
     """Quantify TRQ segmentation with selected method implementation."""
@@ -376,7 +371,7 @@ def analyze(
     study_id: str | None = None,
     segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
-    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
     device: str = "auto",
 ) -> AnalysisResultBase:
@@ -416,7 +411,7 @@ def analyze_many(
     study_ids: Sequence[str | None] | None = None,
     segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
-    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
     on_error: OnError = "record",
     device: str = "auto",

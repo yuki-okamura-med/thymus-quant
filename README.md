@@ -77,6 +77,10 @@ segmentor = tq.load_segmentor(
 )
 ```
 
+`device` controls where TRQseg-v1 model inference runs. Supported values are
+`"auto"`, `"cpu"`, and `"cuda"`. `"auto"` selects CUDA when PyTorch detects an
+available CUDA device, and otherwise falls back to CPU.
+
 When weights are loaded from Hugging Face, branch/tag/default revisions are
 resolved to the underlying commit SHA before download and recorded in result
 metadata. When all selected weights are loaded from a local git mirror, the local
@@ -224,5 +228,5 @@ errors = batch.errors_to_frame()
 ## Coming soon: Methods of Chaunzwa et al.
 
 Chaunzwa et al. recently introduced an improved variant of the thymic
-composition analysis framework implemented in this package (Chaunzwa et al. bioRxiv, 2025. doi.org/10.1101/2025.10.27.25338565 , https://doi.org/10.1101/2025.10.20.25338395 ). Support
+composition analysis framework implemented in this package (Chaunzwa et al. bioRxiv, 2025. https://doi.org/10.1101/2025.10.27.25338565 , https://doi.org/10.1101/2025.10.20.25338395 ). Support
 for the Chaunzwa et al. workflow is planned for a future release.

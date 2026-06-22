@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
     from .segmentors import SegmentationResult
 
-MethodName: TypeAlias = Literal["okamura", "chaunzwa"]
+MethodName: TypeAlias = Literal["okamura"]
 DetailLevel: TypeAlias = Literal["summary", "full"]
 ResultStatus: TypeAlias = Literal["ok", "check", "failed", "not_available"]
 QCStatus: TypeAlias = ResultStatus

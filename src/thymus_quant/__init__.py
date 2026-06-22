@@ -28,7 +28,6 @@ from .exceptions import (
     ThymusQuantError,
 )
 from .inputs import ImageContext
-from .quantification.chaunzwa import ChaunzwaOptions
 from .quantification.okamura import OkamuraOptions
 from .results import (
     AnalysisResultBase,
@@ -54,7 +53,6 @@ __all__ = [
     "BatchAnalysisResultBase",
     "BatchAnalysisResultOkamura",
     "BatchErrorRecord",
-    "ChaunzwaOptions",
     "ExperimentalWarning",
     "ImageContext",
     "InputValidationError",

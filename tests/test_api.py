@@ -25,7 +25,7 @@ def test_unknown_method_detail_and_options_type_fail():
     with pytest.raises(ValueError, match="unknown detail"):
         tq.quantify(seg, method="okamura", detail="verbose")
     with pytest.raises(ValueError, match="unknown method"):
-        tq.quantify(seg, method="chaunzwa", options=tq.OkamuraOptions())
+        tq.quantify(seg, method="bad", options=tq.OkamuraOptions())
 
 
 def test_analyze_requires_explicit_segmentor(tmp_path):
