@@ -1,5 +1,8 @@
 import numpy as np
 import pytest
+import subprocess
+import sys
+import types
 
 import thymus_quant as tq
 from thymus_quant.exceptions import SegmentorConfigurationError
@@ -26,6 +29,35 @@ def test_cache_reuse_for_same_config():
     assert a is b
 
 
+def test_unspecified_hf_revision_is_resolved_before_download(tmp_path, monkeypatch):
+    calls = {}
+    resolved_sha = "a" * 40
+    downloaded_weight = tmp_path / "model.safetensors"
+    downloaded_weight.write_bytes(b"fake")
+
+    class FakeHfApi:
+        def model_info(self, *, repo_id, revision):
+            calls["model_info"] = {"repo_id": repo_id, "revision": revision}
+            return types.SimpleNamespace(sha=resolved_sha)
+
+    def fake_hf_hub_download(**kwargs):
+        calls["download"] = kwargs
+        return str(downloaded_weight)
+
+    fake_hf = types.SimpleNamespace(HfApi=FakeHfApi, hf_hub_download=fake_hf_hub_download)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hf)
+
+    seg = tq.load_segmentor("trqseg_v1", members=[0], cache_dir=tmp_path / "cache")
+    path = seg._resolve_weight_path(seg.members[0])
+
+    assert path == str(downloaded_weight)
+    assert calls["model_info"] == {"repo_id": "yuki-okamura-hf/TRQseg-v1", "revision": None}
+    assert calls["download"]["revision"] == resolved_sha
+    assert seg.info.requested_revision is None
+    assert seg.info.resolved_revision == resolved_sha
+    assert seg.members[0].resolved_revision == resolved_sha
+
+
 def test_local_weight_provenance_from_env(tmp_path, monkeypatch):
     weight = tmp_path / "weights" / "fold-0" / "model.safetensors"
     weight.parent.mkdir(parents=True)
@@ -35,6 +67,33 @@ def test_local_weight_provenance_from_env(tmp_path, monkeypatch):
     assert seg.members[0].local_path == str(weight)
     assert seg.info.local_source == str(tmp_path)
     assert seg.info.weight_source == "local"
+
+
+def test_local_git_mirror_revision_is_recorded(tmp_path, monkeypatch):
+    weight = tmp_path / "weights" / "fold-0" / "model.safetensors"
+    weight.parent.mkdir(parents=True)
+    weight.write_bytes(b"fake")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "weights/fold-0/model.safetensors"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "add weight"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    expected = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    monkeypatch.setenv("THYQ_TRQSEG_V1_LOCAL_REPO", str(tmp_path))
+    seg = tq.load_segmentor("trqseg_v1", members=[0], cache_dir=tmp_path / "cache", local_files_only=True)
+
+    assert seg.info.resolved_revision == expected
+    assert seg.members[0].resolved_revision == expected
 
 
 def test_heuristic_is_explicit_and_warns(tmp_path):

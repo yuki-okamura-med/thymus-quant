@@ -55,8 +55,12 @@ segmentor = tq.load_segmentor(
 )
 ```
 
-The result metadata distinguishes requested and resolved revision and records the
-weight source (`local`, `downloaded`, `mixed`, or `none`).
+When weights are loaded from Hugging Face, branch/tag/default revisions are
+resolved to the underlying commit SHA before download and recorded in result
+metadata. When all selected weights are loaded from a local git mirror, the local
+mirror's HEAD commit is recorded instead. The result metadata distinguishes
+requested and resolved revision and records the weight source (`local`,
+`downloaded`, `mixed`, or `none`).
 
 ## Two-Stage Workflow
 

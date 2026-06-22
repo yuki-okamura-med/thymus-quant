@@ -8,6 +8,7 @@ Design intent:
 """
 
 import os
+import subprocess
 import threading
 from dataclasses import asdict
 from pathlib import Path
@@ -139,6 +140,23 @@ def _find_local_trqseg_v1_repo() -> str | None:
     return None
 
 
+def _resolve_local_git_revision(repo_path: str | None) -> str | None:
+    """Return local git HEAD for a model mirror, when available."""
+    if repo_path is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    revision = proc.stdout.strip()
+    return revision or None
+
+
 def _segmentor_cache_key(
     info: SegmentorInfo,
     requested_members: tuple[str, ...],
@@ -207,6 +225,7 @@ def load_segmentor(
     )
 
     local_repo = _find_local_trqseg_v1_repo() if info.repo_id == "yuki-okamura-hf/TRQseg-v1" else None
+    local_revision = _resolve_local_git_revision(local_repo)
 
     resolved_members = []
     for m in requested:
@@ -228,11 +247,15 @@ def load_segmentor(
         )
     sources = {m.weight_source for m in resolved_members}
     weight_source = "mixed" if len(sources) > 1 else (next(iter(sources)) if sources else "none")
+    all_weights_local = bool(resolved_members) and all(m.local_path is not None for m in resolved_members)
+    resolved_revision = local_revision if (all_weights_local and local_revision is not None) else revision
+    for m in resolved_members:
+        m.resolved_revision = resolved_revision
     info = SegmentorInfo(
         name=info.name,
         repo_id=info.repo_id,
         requested_revision=revision,
-        resolved_revision=revision,
+        resolved_revision=resolved_revision,
         architecture=info.architecture,
         is_ensemble=(len(requested) > 1),
         available_members=info.available_members,

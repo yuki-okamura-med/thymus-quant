@@ -60,6 +60,11 @@ def _upsample_label_to_xyz(y_zxy: np.ndarray, x_size: int, y_size: int) -> np.nd
     return y_up.transpose(1, 2, 0)
 
 
+def _looks_like_full_commit_sha(revision: str | None) -> bool:
+    """Return True when `revision` already looks like an immutable git SHA."""
+    return revision is not None and len(revision) == 40 and all(c in "0123456789abcdefABCDEF" for c in revision)
+
+
 @dataclass(slots=True)
 class SegmentorMember:
     """Descriptor for one model member (e.g., one fold) in a segmentor."""
@@ -131,21 +136,35 @@ class LoadedSegmentor:
             )
 
         try:
-            from huggingface_hub import hf_hub_download
+            from huggingface_hub import HfApi, hf_hub_download
         except Exception as e:  # pragma: no cover - dependency/runtime environment dependent
             raise RuntimeError(
                 "huggingface_hub is required to download TRQseg-v1 weights when local files are not found."
             ) from e
 
+        revision_for_download = self.info.resolved_revision
+        if not self.local_files_only and not _looks_like_full_commit_sha(revision_for_download):
+            model_info = HfApi().model_info(
+                repo_id=self.info.repo_id,
+                revision=self.info.requested_revision,
+            )
+            resolved = getattr(model_info, "sha", None)
+            if resolved:
+                revision_for_download = str(resolved)
+                self.info.resolved_revision = revision_for_download
+                for m in self.members:
+                    m.resolved_revision = revision_for_download
+
         filename = member.relative_path or f"weights/{member.member_id}/model.safetensors"
         path = hf_hub_download(
             repo_id=self.info.repo_id,
             filename=filename,
-            revision=self.info.resolved_revision,
+            revision=revision_for_download,
             cache_dir=self.info.cache_dir,
             local_files_only=self.local_files_only,
         )
         member.local_path = path
+        member.resolved_revision = revision_for_download
         member.weight_source = "downloaded"
         return path
 
