@@ -1,6 +1,17 @@
 # thymus-quant
 
-This package lets you quantify thymic tissue contained inside the thymic region based on human CT images.
+This package lets you quantify thymic tissue contained within the thymic region
+on human CT images. It implements the framework described in Okamura YT et
+al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
+
+Main readouts:
+
+- $A_{TRQ}$: representative HU value of the thymic region of quantification.
+- $V_{TRQ}$: volume of the thymic region of quantification.
+- **Estimated Thymic Volume (ETV)**: estimated thymic tissue volume in mL.
+- Thymic tissue fraction: fraction of thymic tissue in the thymic region,
+  reported as a 0-1 value.
+
 Main APIs:
 
 - `segment_trq`
@@ -15,7 +26,8 @@ Recommended installation:
 pip install "thymus-quant[segmentation]"
 ```
 
-When you have your own segmentation model and you are not using our default segmentation model (`trqseg_v1` model) for inference:
+If you already have masks or use your own segmentation model and do not need
+`trqseg_v1` inference:
 ```bash
 pip install thymus-quant
 ```
@@ -41,8 +53,8 @@ print(result.etv_ml)
 print(result.qc.status)
 ```
 
-`thymic_tissue_fraction` is the Thymic Tissue Fraction. Its unit is a 0-1
-fraction, not percent.
+`thymic_tissue_fraction` is the Thymic Tissue Fraction. It is reported as a 0-1
+fraction, not as a percentage.
 `etv_ml` and `trq_volume_ml` are in mL.
 
 ## Reproducible Model Loading
@@ -120,6 +132,11 @@ Data contract:
 - Masks must be 3D bool or binary 0/1 arrays.
 - CT and mask shapes must match exactly.
 - `spacing_mm` is 3 positive finite values in millimeters.
+- `spacing_mm` is normalized to Python floats and used for voxel-volume
+  calculation. It is not compared against affine/header spacing.
+- External CT/mask inputs are not resampled, cropped, padded, flipped, or
+  permuted. Shape mismatches raise `InputValidationError` instead of being
+  repaired automatically.
 - Masked CT voxels must contain at least one finite HU value.
 - DICOM directories are not directly supported by the public API.
 - Orientation is recorded from the affine when available. The package does not
@@ -168,10 +185,22 @@ Statuses are intentionally simple:
 Important flags include `invalid_member`, `all_members_invalid`,
 `used_invalid_members`, `kde_failed`, and `ensemble_qc_unavailable`.
 
+For the Okamura method, a non-unimodal member distribution is marked invalid
+with `multimodal_or_invalid`. By default, any invalid member adds
+`invalid_member` and makes the study status `check`. If at least one member
+passes QC, the summary uses only QC-valid members. If all members fail QC but
+still have computable numeric values, the summary uses those invalid members,
+sets `all_members_invalid` and `used_invalid_members`, and remains `check`.
+
 KDE computation failure is not converted to a fake median mode. Missing spacing
-does not produce successful NaN volume/ETV output. Single-member analysis can
-return quantification values, but 5-member paper ensemble criteria are not
-passed and `ensemble_qc_unavailable` is set.
+does not produce a successful result with NaN volume/ETV output. Single-member
+analysis can return quantification values, but 5-member paper ensemble criteria
+are not passed and `ensemble_qc_unavailable` is set.
+
+`failed` means at least one member/mask was provided, but no computable Okamura
+value was produced. `not_available` means the method had no applicable
+member/mask to evaluate; this should be uncommon when using the public
+constructors.
 
 Batch processing preserves input order and records errors with input index:
 
@@ -182,13 +211,8 @@ errors = batch.errors_to_frame()
 
 `on_error` values are `raise`, `record`, and `skip`.
 
-## Experimental: Chaunzwa
+## Coming soon: Methods of Chaunzwa et al.
 
-Chaunzwa support is experimental and is not a formal release endpoint. Its API
-and numerical implementation may change. Do not use the current Chaunzwa output
-as a collaborative primary endpoint, and do not treat it as validated equivalently
-to Okamura.
-
-When called explicitly, Chaunzwa emits `ExperimentalWarning` and sets
-experimental metadata/flags in the result. Known numerical issues are documented
-in [docs/chaunzwa_known_issues.md](docs/chaunzwa_known_issues.md).
+Chaunzwa et al. recently introduced an improved variant of the thymic
+composition analysis framework implemented in this package. Support
+for the Chaunzwa et al. workflow is planned for a future release.
