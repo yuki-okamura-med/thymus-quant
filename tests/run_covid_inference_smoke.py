@@ -137,7 +137,7 @@ def main() -> int:
             f,
             fieldnames=[
                 "fold",
-                "okamura_ptt",
+                "okamura_thymic_tissue_fraction",
                 "okamura_etv_ml",
                 "chaunzwa_ptt",
                 "chaunzwa_etv_ml",
@@ -155,7 +155,7 @@ def main() -> int:
             writer.writerow(
                 {
                     "fold": r["fold_id"],
-                    "okamura_ptt": r["okamura"].get("ptt"),
+                    "okamura_thymic_tissue_fraction": r["okamura"].get("thymic_tissue_fraction"),
                     "okamura_etv_ml": r["okamura"].get("etv_ml"),
                     "chaunzwa_ptt": r["chaunzwa"].get("ptt"),
                     "chaunzwa_etv_ml": r["chaunzwa"].get("etv_ml"),

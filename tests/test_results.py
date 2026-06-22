@@ -18,13 +18,13 @@ def _result():
     return tq.quantify(seg, method="okamura")
 
 
-def test_result_status_metadata_and_ptt_units():
+def test_result_status_metadata_and_thymic_tissue_fraction_units():
     result = _result()
     d = result.to_dict()
     assert d["status"] == "check"
     assert d["meta"]["library_version"] == tq.__version__
     assert d["meta"]["spacing_mm"] == [1.0, 1.0, 1.0]
-    assert result.ptt == 50.0
+    assert result.thymic_tissue_fraction == 0.5
 
 
 def test_json_serialization_has_no_nan_or_infinity():
@@ -37,7 +37,7 @@ def test_json_serialization_has_no_nan_or_infinity():
 def test_to_record_and_frame():
     result = _result()
     rec = result.to_record()
-    assert rec["ptt"] == 50.0
+    assert rec["thymic_tissue_fraction"] == 0.5
     frame = result.to_frame()
     assert list(frame["study_id"]) == ["case-001"]
 

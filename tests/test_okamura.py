@@ -22,10 +22,10 @@ def _seg(ct, masks=None):
     )
 
 
-def test_constant_hu_region_ptt_and_anisotropic_volume():
+def test_constant_hu_region_thymic_tissue_fraction_and_anisotropic_volume():
     ct = np.full((6, 6, 6), -15.0)
     result = tq.quantify(_seg(ct), method="okamura")
-    assert result.ptt == pytest.approx(50.0)
+    assert result.thymic_tissue_fraction == pytest.approx(0.5)
     assert result.trq_volume_ml == pytest.approx(64 * 6 / 1000)
     assert result.etv_ml == pytest.approx(result.trq_volume_ml * 0.5)
     assert "ensemble_qc_unavailable" in result.qc.flags
@@ -41,7 +41,7 @@ def test_kde_exception_is_not_median_mode(monkeypatch):
     ct = np.linspace(-100, 20, 216).reshape(6, 6, 6)
     result = tq.quantify(_seg(ct), method="okamura", detail="full")
 
-    assert result.ptt is None
+    assert result.thymic_tissue_fraction is None
     assert result.status == "failed"
     assert "kde_failed" in result.flags
     assert result.members[0].trq_hu_mode is None
@@ -67,7 +67,7 @@ def test_all_members_qc_invalid_but_computable_returns_check_with_flags():
         method="okamura",
         options=tq.OkamuraOptions(second_peak_ratio_threshold=-1.0),
     )
-    assert result.ptt is not None
+    assert result.thymic_tissue_fraction is not None
     assert result.status == "check"
     assert "all_members_invalid" in result.flags
     assert "used_invalid_members" in result.flags
@@ -78,7 +78,7 @@ def test_all_members_computation_failed_returns_failed(monkeypatch):
     monkeypatch.setattr(okm, "_kde_mode_and_second_ratio", lambda values: (_ for _ in ()).throw(okm.NumericalError("boom")))
     result = tq.quantify(_seg(np.full((6, 6, 6), -15.0)), method="okamura")
     assert result.status == "failed"
-    assert result.ptt is None
+    assert result.thymic_tissue_fraction is None
 
 
 def test_missing_spacing_does_not_return_nan():

@@ -1,39 +1,28 @@
 # thymus-quant
 
-Thymus quantification toolkit with a small public API:
+This package lets you quantify thymic tissue contained inside the thymic region based on human CT images.
+Main APIs:
 
 - `segment_trq`
 - `quantify`
 - `analyze`
 - `analyze_many`
 
-The short scientific field names are intentional. In particular, `ptt` means
-percent thymic tissue and is reported in percent (%), normally 0-100.
-
 ## Installation
 
-Base install:
-
-```bash
-pip install thymus-quant
-```
-
-Install segmentation dependencies when using `trqseg_v1` model inference:
-
+Recommended installation:
 ```bash
 pip install "thymus-quant[segmentation]"
 ```
 
-Install development/test dependencies from a checkout:
-
+When you have your own segmentation model and you are not using our default segmentation model (`trqseg_v1` model) for inference:
 ```bash
-pip install -e ".[dev]"
+pip install thymus-quant
 ```
 
 Model weights are loaded through the Hugging Face cache unless `local_files_only`
 or an explicit local mirror is configured. A local TRQseg-v1 mirror may be set
-with `THYQ_TRQSEG_V1_LOCAL_REPO=/path/to/TRQseg-v1`. Developer-specific paths are
-not searched implicitly.
+with `THYQ_TRQSEG_V1_LOCAL_REPO=/path/to/TRQseg-v1`.
 
 ## Minimal Example
 
@@ -47,12 +36,13 @@ result = tq.analyze(
     study_id="case-001",
 )
 
-print(result.ptt)
+print(result.thymic_tissue_fraction)
 print(result.etv_ml)
 print(result.qc.status)
 ```
 
-`ptt` is percent thymic tissue. Its unit is percent (%), not a 0-1 fraction.
+`thymic_tissue_fraction` is the Thymic Tissue Fraction. Its unit is a 0-1
+fraction, not percent.
 `etv_ml` and `trq_volume_ml` are in mL.
 
 ## Reproducible Model Loading
@@ -65,8 +55,6 @@ segmentor = tq.load_segmentor(
 )
 ```
 
-Before release, the tested model revision should be pinned to an immutable
-resolved commit. If no tested revision is available, do not invent a commit hash.
 The result metadata distinguishes requested and resolved revision and records the
 weight source (`local`, `downloaded`, `mixed`, or `none`).
 
@@ -154,9 +142,9 @@ back to `heuristic_trq`.
 - TRQ: thymic region of quantification.
 - `A_TRQ`: representative TRQ attenuation used by published formulas.
 - `V_TRQ`: TRQ volume.
-- pTT: percent thymic tissue, unit %, usually 0-100.
+- Thymic Tissue Fraction: fraction of thymic tissue in the TRQ, usually 0-1.
 - ETV: estimated thymic volume, unit mL.
-- `ptt`: summary pTT for the study.
+- `thymic_tissue_fraction`: summary Thymic Tissue Fraction for the study.
 - `etv_ml`: summary ETV in mL.
 - `trq_volume_ml`: summary TRQ volume in mL.
 

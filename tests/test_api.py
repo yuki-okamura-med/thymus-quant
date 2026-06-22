@@ -14,7 +14,7 @@ def _seg():
 def test_public_quantify_basic_okamura():
     result = tq.quantify(_seg(), method="okamura")
     assert result.method == "okamura"
-    assert result.ptt is not None
+    assert result.thymic_tissue_fraction is not None
     assert result.qc.status == "check"  # single-member ensemble QC unavailable
 
 

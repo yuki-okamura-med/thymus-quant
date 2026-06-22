@@ -166,7 +166,7 @@ def _as_summary_member(member: OkamuraMemberResult) -> OkamuraMemberResult:
         trq_hu_mode=member.trq_hu_mode,
         trq_volume_ml=member.trq_volume_ml,
         etv_ml=member.etv_ml,
-        ptt=member.ptt,
+        thymic_tissue_fraction=member.thymic_tissue_fraction,
         etv_fraction_adjusted=member.etv_fraction_adjusted,
         atrq_below_aadipose=member.atrq_below_aadipose,
         second_peak_ratio=member.second_peak_ratio,
@@ -193,7 +193,7 @@ def quantify_okamura(
     modes: list[float] = []
     vols: list[float] = []
     etvs: list[float] = []
-    ptts: list[float] = []
+    thymic_tissue_fractions: list[float] = []
     atrq_below_flags: list[bool] = []
     valid_mask: list[bool] = []
     computed_mask: list[bool] = []
@@ -242,10 +242,9 @@ def quantify_okamura(
             valid_mask.append(False)
             continue
 
-        ptt_fraction = float(
+        thymic_tissue_fraction = float(
             np.clip((mode - options.aadipose_hu) / (options.athymic_hu - options.aadipose_hu), 0.0, 1.0)
         )
-        ptt = float(ptt_fraction * 100.0)
 
         mode_for_etv = float(max(mode, options.aadipose_hu + options.delta_hu_margin))
         etv_frac = float(
@@ -265,7 +264,7 @@ def quantify_okamura(
                 trq_hu_mode=float(mode),
                 trq_volume_ml=vol,
                 etv_ml=etv,
-                ptt=ptt,
+                thymic_tissue_fraction=thymic_tissue_fraction,
                 etv_fraction_adjusted=etv_frac,
                 atrq_below_aadipose=atrq_below,
                 second_peak_ratio=float(second_ratio),
@@ -279,7 +278,7 @@ def quantify_okamura(
         modes.append(float(mode))
         vols.append(vol)
         etvs.append(etv)
-        ptts.append(ptt)
+        thymic_tissue_fractions.append(thymic_tissue_fraction)
         atrq_below_flags.append(atrq_below)
         valid_mask.append(valid)
         computed_mask.append(True)
@@ -291,7 +290,7 @@ def quantify_okamura(
     trq_hu = float(np.median([modes[i] for i in use_indices])) if use_indices else None
     trq_vol = float(np.median([vols[i] for i in use_indices])) if use_indices else None
     etv = float(np.median([etvs[i] for i in use_indices])) if use_indices else None
-    ptt = float(np.median([ptts[i] for i in use_indices])) if use_indices else None
+    thymic_tissue_fraction = float(np.median([thymic_tissue_fractions[i] for i in use_indices])) if use_indices else None
 
     mean_jsd = None
     mean_dsc = None
@@ -371,12 +370,12 @@ def quantify_okamura(
         trq_hu_mode=trq_hu,
         trq_volume_ml=trq_vol,
         etv_ml=etv,
-        ptt=ptt,
+        thymic_tissue_fraction=thymic_tissue_fraction,
         atrq_below_aadipose_any=(any(atrq_below_flags) if atrq_below_flags else None),
         trq_hu_mode_members=tuple(modes),
         trq_volume_ml_members=tuple(vols),
         etv_ml_members=tuple(etvs),
-        ptt_members=tuple(ptts),
+        thymic_tissue_fraction_members=tuple(thymic_tissue_fractions),
         atrq_below_aadipose_members=tuple(atrq_below_flags),
         qc=qc,
         members=members_out,

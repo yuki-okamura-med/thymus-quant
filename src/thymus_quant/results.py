@@ -139,7 +139,7 @@ class OkamuraMemberResult:
 
     Notes
     -----
-    `ptt` is stored as percentage in the range 0-100.
+    `thymic_tissue_fraction` is stored as a fraction in the range 0-1.
     """
 
     member_id: str
@@ -147,7 +147,7 @@ class OkamuraMemberResult:
     trq_hu_mode: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
-    ptt: float | None = None
+    thymic_tissue_fraction: float | None = None
     etv_fraction_adjusted: float | None = None
     atrq_below_aadipose: bool | None = None
     second_peak_ratio: float | None = None
@@ -166,18 +166,19 @@ class AnalysisResultOkamura(AnalysisResultBase):
 
     Notes
     -----
-    `ptt` and `ptt_members` are percentages in the range 0-100.
+    `thymic_tissue_fraction` and `thymic_tissue_fraction_members` are fractions
+    in the range 0-1.
     """
 
     trq_hu_mode: float | None = None
     trq_volume_ml: float | None = None
     etv_ml: float | None = None
-    ptt: float | None = None
+    thymic_tissue_fraction: float | None = None
     atrq_below_aadipose_any: bool | None = None
     trq_hu_mode_members: Sequence[float] = field(default_factory=tuple)
     trq_volume_ml_members: Sequence[float] = field(default_factory=tuple)
     etv_ml_members: Sequence[float] = field(default_factory=tuple)
-    ptt_members: Sequence[float] = field(default_factory=tuple)
+    thymic_tissue_fraction_members: Sequence[float] = field(default_factory=tuple)
     atrq_below_aadipose_members: Sequence[bool] = field(default_factory=tuple)
     qc: OkamuraQC | None = None
     members: Sequence[OkamuraMemberResult] = field(default_factory=tuple)
@@ -196,14 +197,14 @@ class AnalysisResultOkamura(AnalysisResultBase):
                 "trq_hu_mode": self.trq_hu_mode,
                 "trq_volume_ml": self.trq_volume_ml,
                 "etv_ml": self.etv_ml,
-                "ptt": self.ptt,
+                "thymic_tissue_fraction": self.thymic_tissue_fraction,
                 "atrq_below_aadipose_any": self.atrq_below_aadipose_any,
             },
             "member_values": {
                 "trq_hu_mode_members": list(self.trq_hu_mode_members),
                 "trq_volume_ml_members": list(self.trq_volume_ml_members),
                 "etv_ml_members": list(self.etv_ml_members),
-                "ptt_members": list(self.ptt_members),
+                "thymic_tissue_fraction_members": list(self.thymic_tissue_fraction_members),
                 "atrq_below_aadipose_members": list(self.atrq_below_aadipose_members),
             },
             "qc": None if self.qc is None else asdict(self.qc),
@@ -214,7 +215,7 @@ class AnalysisResultOkamura(AnalysisResultBase):
                     "trq_hu_mode": m.trq_hu_mode,
                     "trq_volume_ml": m.trq_volume_ml,
                     "etv_ml": m.etv_ml,
-                    "ptt": m.ptt,
+                    "thymic_tissue_fraction": m.thymic_tissue_fraction,
                     "etv_fraction_adjusted": m.etv_fraction_adjusted,
                     "atrq_below_aadipose": m.atrq_below_aadipose,
                     "second_peak_ratio": m.second_peak_ratio,
@@ -236,12 +237,12 @@ class AnalysisResultOkamura(AnalysisResultBase):
             "trq_hu_mode": self.trq_hu_mode,
             "trq_volume_ml": self.trq_volume_ml,
             "etv_ml": self.etv_ml,
-            "ptt": self.ptt,
+            "thymic_tissue_fraction": self.thymic_tissue_fraction,
             "atrq_below_aadipose_any": self.atrq_below_aadipose_any,
             "trq_hu_mode_members": tuple(self.trq_hu_mode_members),
             "trq_volume_ml_members": tuple(self.trq_volume_ml_members),
             "etv_ml_members": tuple(self.etv_ml_members),
-            "ptt_members": tuple(self.ptt_members),
+            "thymic_tissue_fraction_members": tuple(self.thymic_tissue_fraction_members),
             "atrq_below_aadipose_members": tuple(self.atrq_below_aadipose_members),
             "qc_status": None if self.qc is None else self.qc.status,
             "qc_paper_criteria_met": None if self.qc is None else self.qc.paper_criteria_met,
