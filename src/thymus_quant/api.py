@@ -8,21 +8,19 @@ Design intent:
 """
 
 import os
+import subprocess
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from typing import Literal, Sequence, overload
 
-import nibabel as nib
-import numpy as np
-
-from .quantification.chaunzwa import ChaunzwaOptions, quantify_chaunzwa
+from .exceptions import SegmentorConfigurationError
+from ._version import __version__
 from .quantification.okamura import OkamuraOptions, quantify_okamura
 from .results import (
     AnalysisResultBase,
-    AnalysisResultChaunzwa,
     AnalysisResultOkamura,
     BatchAnalysisResultBase,
-    BatchAnalysisResultChaunzwa,
     BatchAnalysisResultOkamura,
     BatchErrorRecord,
     DetailLevel,
@@ -39,7 +37,38 @@ _SEGMENTOR_CACHE_LOCK = threading.Lock()
 
 def list_methods() -> tuple[MethodName, ...]:
     """Return supported quantification method names."""
-    return ("okamura", "chaunzwa")
+    return ("okamura",)
+
+
+def _validate_method(method: str, *, function: str, study_id: str | None = None) -> MethodName:
+    allowed = list_methods()
+    if method not in allowed:
+        raise ValueError(f"{function}(study_id={study_id!r}) received unknown method {method!r}; allowed values are {allowed}")
+    return method  # type: ignore[return-value]
+
+
+def _validate_detail(detail: str, *, function: str, study_id: str | None = None) -> DetailLevel:
+    allowed: tuple[DetailLevel, ...] = ("summary", "full")
+    if detail not in allowed:
+        raise ValueError(f"{function}(study_id={study_id!r}) received unknown detail {detail!r}; allowed values are {allowed}")
+    return detail  # type: ignore[return-value]
+
+
+def _validate_on_error(on_error: str, *, function: str) -> OnError:
+    allowed: tuple[OnError, ...] = ("raise", "record", "skip")
+    if on_error not in allowed:
+        raise ValueError(f"{function} received unknown on_error {on_error!r}; allowed values are {allowed}")
+    return on_error  # type: ignore[return-value]
+
+
+def _validate_options(method: MethodName, options: OkamuraOptions | None, *, function: str, study_id: str | None = None):
+    if method == "okamura":
+        if options is not None and not isinstance(options, OkamuraOptions):
+            raise TypeError(
+                f"{function}(study_id={study_id!r}, method='okamura') requires OkamuraOptions or None; got {type(options).__name__}"
+            )
+        return options if options is not None else OkamuraOptions()
+    raise ValueError(f"Unsupported method: {method}")
 
 
 def list_segmentors() -> dict[str, SegmentorInfo]:
@@ -53,6 +82,7 @@ def list_segmentors() -> dict[str, SegmentorInfo]:
             is_ensemble=True,
             available_members=trqseg_v1_fold_members,
             selected_members=trqseg_v1_fold_members,
+            preprocessing_version="trqseg_v1_preprocess_v1",
         ),
         "heuristic_trq": SegmentorInfo(
             name="heuristic_trq",
@@ -61,6 +91,8 @@ def list_segmentors() -> dict[str, SegmentorInfo]:
             is_ensemble=False,
             available_members=("single",),
             selected_members=("single",),
+            weight_source="none",
+            preprocessing_version="heuristic_v1",
         ),
     }
 
@@ -69,30 +101,53 @@ def _resolve_members(members: Sequence[int | str] | None, default: Sequence[str]
     """Normalize member selector into fold-name tuple."""
     if members is None:
         return tuple(default)
+    if len(members) == 0:
+        raise SegmentorConfigurationError("load_segmentor(members=...) must not be empty")
     out = []
     for m in members:
         if isinstance(m, int):
+            if m < 0:
+                raise SegmentorConfigurationError(f"load_segmentor received invalid negative member index {m}")
             out.append(f"fold-{m}")
         else:
             s = str(m)
-            out.append(s if s.startswith("fold-") else f"fold-{s}")
-    return tuple(out)
+            out.append(s if (s in default or s.startswith("fold-")) else f"fold-{s}")
+    resolved = tuple(out)
+    if len(set(resolved)) != len(resolved):
+        raise SegmentorConfigurationError(f"load_segmentor received duplicate members: {resolved}")
+    allowed = set(default)
+    bad = [m for m in resolved if m not in allowed]
+    if bad:
+        raise SegmentorConfigurationError(f"load_segmentor received unknown members {bad}; allowed members are {tuple(default)}")
+    return resolved
 
 
 def _find_local_trqseg_v1_repo() -> str | None:
     """Find local mirror path for TRQseg-v1 if available."""
     env_path = os.environ.get("THYQ_TRQSEG_V1_LOCAL_REPO")
-    candidates = []
-    if env_path:
-        candidates.append(Path(env_path))
-    candidates.extend([
-        Path("/mnt/w/repos/TRQseg-v1"),
-        Path("/mnt/w/repos/trqseg-v1"),
-    ])
-    for c in candidates:
+    if not env_path:
+        return None
+    for c in [Path(env_path)]:
         if c.exists() and c.is_dir():
             return str(c)
     return None
+
+
+def _resolve_local_git_revision(repo_path: str | None) -> str | None:
+    """Return local git HEAD for a model mirror, when available."""
+    if repo_path is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_path, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    revision = proc.stdout.strip()
+    return revision or None
 
 
 def _segmentor_cache_key(
@@ -105,10 +160,13 @@ def _segmentor_cache_key(
     return (
         info.name,
         info.repo_id,
+        info.requested_revision,
         info.resolved_revision,
         requested_members,
         bool(local_files_only),
         info.cache_dir,
+        info.local_source,
+        info.weight_source,
         device,
     )
 
@@ -128,7 +186,7 @@ def load_segmentor(
     `segmentor` must be explicitly specified.
     """
     if segmentor is None:
-        raise ValueError(
+        raise SegmentorConfigurationError(
             "segmentor must be specified explicitly (e.g. 'trqseg_v1'). "
             f"Available aliases: {', '.join(sorted(list_segmentors().keys()))}"
         )
@@ -136,7 +194,10 @@ def load_segmentor(
     reg = list_segmentors()
     info = reg.get(segmentor)
     if info is None:
-        info = SegmentorInfo(name=segmentor, repo_id=segmentor, architecture="unknown", is_ensemble=True)
+        raise SegmentorConfigurationError(
+            f"load_segmentor received unknown segmentor alias {segmentor!r}; "
+            f"allowed aliases are {tuple(sorted(reg.keys()))}. Custom Hugging Face repo IDs are not accepted as aliases."
+        )
 
     default_members = info.available_members or tuple(f"fold-{i}" for i in range(5))
     requested = _resolve_members(members, default_members)
@@ -153,15 +214,11 @@ def load_segmentor(
         available_members=info.available_members,
         selected_members=requested,
         cache_dir=None if cache_dir is None else str(cache_dir),
+        preprocessing_version=info.preprocessing_version,
     )
 
-    cache_key = _segmentor_cache_key(info, requested, local_files_only, device)
-    with _SEGMENTOR_CACHE_LOCK:
-        cached = _SEGMENTOR_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
     local_repo = _find_local_trqseg_v1_repo() if info.repo_id == "yuki-okamura-hf/TRQseg-v1" else None
+    local_revision = _resolve_local_git_revision(local_repo)
 
     resolved_members = []
     for m in requested:
@@ -177,8 +234,36 @@ def load_segmentor(
                 relative_path=rel,
                 local_path=local_path,
                 revision=revision,
+                resolved_revision=revision,
+                weight_source="local" if local_path else "unknown",
             )
         )
+    sources = {m.weight_source for m in resolved_members}
+    weight_source = "mixed" if len(sources) > 1 else (next(iter(sources)) if sources else "none")
+    all_weights_local = bool(resolved_members) and all(m.local_path is not None for m in resolved_members)
+    resolved_revision = local_revision if (all_weights_local and local_revision is not None) else revision
+    for m in resolved_members:
+        m.resolved_revision = resolved_revision
+    info = SegmentorInfo(
+        name=info.name,
+        repo_id=info.repo_id,
+        requested_revision=revision,
+        resolved_revision=resolved_revision,
+        architecture=info.architecture,
+        is_ensemble=(len(requested) > 1),
+        available_members=info.available_members,
+        selected_members=requested,
+        cache_dir=None if cache_dir is None else str(cache_dir),
+        weight_source=weight_source,  # may become downloaded after lazy load
+        local_source=local_repo,
+        preprocessing_version=info.preprocessing_version,
+    )
+
+    cache_key = _segmentor_cache_key(info, requested, local_files_only, device)
+    with _SEGMENTOR_CACHE_LOCK:
+        cached = _SEGMENTOR_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
 
     loaded = LoadedSegmentor(
         info=info,
@@ -188,6 +273,9 @@ def load_segmentor(
     )
 
     with _SEGMENTOR_CACHE_LOCK:
+        existing = _SEGMENTOR_CACHE.get(cache_key)
+        if existing is not None:
+            return existing
         _SEGMENTOR_CACHE[cache_key] = loaded
     return loaded
 
@@ -216,12 +304,19 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
         study_id=segmentation.study_id,
         method=method,
         detail=detail,
-        input_source=segmentation.study_id,
+        input_source=None if segmentation.image is None else segmentation.image.source,
         segmentor_name=None if sinfo is None else sinfo.name,
         segmentor_repo_id=None if sinfo is None else sinfo.repo_id,
+        segmentor_requested_revision=None if sinfo is None else sinfo.requested_revision,
         segmentor_revision=None if sinfo is None else sinfo.resolved_revision,
         segmentor_members=() if sinfo is None else tuple(sinfo.selected_members),
-        library_version="0.1.0a0",
+        segmentor_weight_source=None if sinfo is None else sinfo.weight_source,
+        segmentor_local_source=None if sinfo is None else sinfo.local_source,
+        preprocessing_version=None if sinfo is None else sinfo.preprocessing_version,
+        image_shape=None if segmentation.image is None else tuple(segmentation.image.shape),
+        spacing_mm=None if segmentation.image is None else tuple(segmentation.image.spacing_mm),
+        orientation=None if segmentation.image is None else segmentation.image.orientation,
+        library_version=__version__,
     )
 
 
@@ -235,31 +330,22 @@ def quantify(
 ) -> AnalysisResultOkamura: ...
 
 
-@overload
-def quantify(
-    segmentation: SegmentationResult,
-    *,
-    method: Literal["chaunzwa"],
-    options: ChaunzwaOptions | None = None,
-    detail: DetailLevel = "summary",
-) -> AnalysisResultChaunzwa: ...
-
-
 def quantify(
     segmentation: SegmentationResult,
     *,
     method: MethodName,
-    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
 ) -> AnalysisResultBase:
     """Quantify TRQ segmentation with selected method implementation."""
+    method = _validate_method(method, function="quantify", study_id=segmentation.study_id)
+    detail = _validate_detail(detail, function="quantify", study_id=segmentation.study_id)
+    opt = _validate_options(method, options, function="quantify", study_id=segmentation.study_id)
+    meta = _meta(segmentation, method, detail)
+    meta.method_version = f"{method}_v1"
+    meta.options = asdict(opt)
     if method == "okamura":
-        opt = options if isinstance(options, OkamuraOptions) else OkamuraOptions()
-        return quantify_okamura(segmentation, options=opt, detail=detail, meta=_meta(segmentation, "okamura", detail))
-
-    if method == "chaunzwa":
-        opt = options if isinstance(options, ChaunzwaOptions) else ChaunzwaOptions()
-        return quantify_chaunzwa(segmentation, options=opt, detail=detail, meta=_meta(segmentation, "chaunzwa", detail))
+        return quantify_okamura(segmentation, options=opt, detail=detail, meta=meta)
 
     raise ValueError(f"Unsupported method: {method}")
 
@@ -278,20 +364,6 @@ def analyze(
 ) -> AnalysisResultOkamura: ...
 
 
-@overload
-def analyze(
-    image: ImageInput,
-    *,
-    method: Literal["chaunzwa"],
-    study_id: str | None = None,
-    segmentor: str | LoadedSegmentor | None = None,
-    revision: str | None = None,
-    options: ChaunzwaOptions | None = None,
-    detail: DetailLevel = "summary",
-    device: str = "auto",
-) -> AnalysisResultChaunzwa: ...
-
-
 def analyze(
     image: ImageInput,
     *,
@@ -299,26 +371,20 @@ def analyze(
     study_id: str | None = None,
     segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
-    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
     device: str = "auto",
 ) -> AnalysisResultBase:
     """Run one-shot segmentation + quantification."""
+    method = _validate_method(method, function="analyze", study_id=study_id)
+    detail = _validate_detail(detail, function="analyze", study_id=study_id)
+    options = _validate_options(method, options, function="analyze", study_id=study_id)
     if segmentor is None:
-        raise ValueError(
+        raise SegmentorConfigurationError(
             "segmentor must be explicitly specified (string alias/repo ID or LoadedSegmentor)."
         )
 
     seg = segment_trq(image, study_id=study_id, segmentor=segmentor, revision=revision, device=device)
-
-    # Attach CT context for downstream method implementations.
-    img = image if isinstance(image, nib.spatialimages.SpatialImage) else nib.load(str(image))
-    ct = np.asarray(img.get_fdata(), dtype=float)
-    for m in seg.members:
-        base = m.raw_output if isinstance(m.raw_output, dict) else {}
-        base["ct_array"] = ct
-        base["ct_image"] = img
-        m.raw_output = base
 
     return quantify(seg, method=method, options=options, detail=detail)
 
@@ -338,21 +404,6 @@ def analyze_many(
 ) -> BatchAnalysisResultOkamura: ...
 
 
-@overload
-def analyze_many(
-    images: Sequence[ImageInput],
-    *,
-    method: Literal["chaunzwa"],
-    study_ids: Sequence[str | None] | None = None,
-    segmentor: str | LoadedSegmentor | None = None,
-    revision: str | None = None,
-    options: ChaunzwaOptions | None = None,
-    detail: DetailLevel = "summary",
-    on_error: OnError = "record",
-    device: str = "auto",
-) -> BatchAnalysisResultChaunzwa: ...
-
-
 def analyze_many(
     images: Sequence[ImageInput],
     *,
@@ -360,16 +411,20 @@ def analyze_many(
     study_ids: Sequence[str | None] | None = None,
     segmentor: str | LoadedSegmentor | None = None,
     revision: str | None = None,
-    options: OkamuraOptions | ChaunzwaOptions | None = None,
+    options: OkamuraOptions | None = None,
     detail: DetailLevel = "summary",
     on_error: OnError = "record",
     device: str = "auto",
 ) -> BatchAnalysisResultBase:
     """Run one-shot analysis for multiple studies."""
+    method = _validate_method(method, function="analyze_many")
+    detail = _validate_detail(detail, function="analyze_many")
+    on_error = _validate_on_error(on_error, function="analyze_many")
+    options = _validate_options(method, options, function="analyze_many")
     if study_ids is not None and len(study_ids) != len(images):
         raise ValueError("study_ids must match images length")
     if segmentor is None:
-        raise ValueError(
+        raise SegmentorConfigurationError(
             "segmentor must be explicitly specified (string alias/repo ID or LoadedSegmentor)."
         )
 
@@ -400,12 +455,11 @@ def analyze_many(
                         study_id=sid,
                         error_type=type(e).__name__,
                         message=str(e),
+                        input_index=i,
                     )
                 )
             # on_error == "skip" -> ignore
 
     if method == "okamura":
-        return BatchAnalysisResultOkamura(method="okamura", results=tuple(results), errors=tuple(errors))
-    if method == "chaunzwa":
-        return BatchAnalysisResultChaunzwa(method="chaunzwa", results=tuple(results), errors=tuple(errors))
+        return BatchAnalysisResultOkamura(method="okamura", results=tuple(results), errors=tuple(errors), n_requested=len(images))
     raise ValueError(f"Unsupported method: {method}")

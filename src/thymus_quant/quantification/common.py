@@ -5,16 +5,27 @@ from __future__ import annotations
 import nibabel as nib
 import numpy as np
 
+from ..exceptions import MissingGeometryError
+from ..inputs import validate_spacing
 
-def voxvol_ml(mask: np.ndarray, img: nib.spatialimages.SpatialImage | None) -> float:
+
+def spacing_voxel_volume_ml(spacing_mm) -> float:
+    """Return one-voxel volume in mL from validated spacing in mm."""
+    sx, sy, sz = validate_spacing(spacing_mm)
+    return float((sx * sy * sz) / 1000.0)
+
+
+def voxvol_ml(mask: np.ndarray, img: nib.spatialimages.SpatialImage | None = None, spacing_mm=None) -> float:
     """Convert mask voxel count to physical volume in mL.
 
-    If image spacing is unavailable (`img is None`), return ``NaN``.
+    Spacing is required; silent NaN volume is not allowed.
     """
-    if img is None:
-        return float("nan")
-    zoom = img.header.get_zooms()[:3]
-    return float((mask > 0).sum() * (zoom[0] * zoom[1] * zoom[2]) / 1000.0)
+    if spacing_mm is None:
+        if img is None:
+            raise MissingGeometryError("spacing_mm or image header spacing is required for volume/ETV computation")
+        spacing_mm = img.header.get_zooms()[:3]
+    voxel_ml = spacing_voxel_volume_ml(spacing_mm)
+    return float((mask > 0).sum() * voxel_ml)
 
 
 def dice(a: np.ndarray, b: np.ndarray) -> float:
