@@ -24,7 +24,7 @@ def test_unknown_method_detail_and_options_type_fail():
         tq.quantify(seg, method="bad")
     with pytest.raises(ValueError, match="unknown detail"):
         tq.quantify(seg, method="okamura", detail="verbose")
-    with pytest.raises(TypeError, match="requires ChaunzwaOptions"):
+    with pytest.raises(ValueError, match="unknown method"):
         tq.quantify(seg, method="chaunzwa", options=tq.OkamuraOptions())
 
 

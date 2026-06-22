@@ -32,18 +32,12 @@ from .quantification.chaunzwa import ChaunzwaOptions
 from .quantification.okamura import OkamuraOptions
 from .results import (
     AnalysisResultBase,
-    AnalysisResultChaunzwa,
     AnalysisResultOkamura,
     BatchAnalysisResultBase,
-    BatchAnalysisResultChaunzwa,
     BatchAnalysisResultOkamura,
     BatchErrorRecord,
-    GaussianMixtureFit,
-    GMMComponent,
     OkamuraMemberResult,
     OkamuraQC,
-    PosteriorMaps,
-    PosteriorSummary,
     ResultMeta,
 )
 from .segmentors import (
@@ -56,16 +50,12 @@ from .segmentors import (
 
 __all__ = [
     "AnalysisResultBase",
-    "AnalysisResultChaunzwa",
     "AnalysisResultOkamura",
     "BatchAnalysisResultBase",
-    "BatchAnalysisResultChaunzwa",
     "BatchAnalysisResultOkamura",
     "BatchErrorRecord",
     "ChaunzwaOptions",
     "ExperimentalWarning",
-    "GaussianMixtureFit",
-    "GMMComponent",
     "ImageContext",
     "InputValidationError",
     "LoadedSegmentor",
@@ -74,8 +64,6 @@ __all__ = [
     "OkamuraMemberResult",
     "OkamuraOptions",
     "OkamuraQC",
-    "PosteriorMaps",
-    "PosteriorSummary",
     "QuantificationError",
     "ResultMeta",
     "SegmentationMember",

@@ -5,7 +5,7 @@ from __future__ import annotations
 What this script does:
 1) Download one public NIfTI sample to tests/test_images
 2) Run fold-wise TRQ inference (fold-0..fold-4)
-3) Run both quantification methods (okamura, chaunzwa)
+3) Run Okamura quantification
 4) Save outputs in separate directories:
    - non-text segmentation artifacts -> tests/segmentation_outputs
    - text/json summaries -> tests/text_outputs
@@ -85,37 +85,16 @@ def main() -> int:
             _save_mask(airway_mask, img.affine, seg_out_dir / f"sample_fold{fold_id}_airway_mask.nii.gz")
 
         okamura = tq.quantify(seg, method="okamura")
-        chaunzwa = tq.quantify(seg, method="chaunzwa")
-
         fold_result = {
             "fold_id": fold_id,
             "n_trq_voxels": int(trq_mask.sum()),
             "okamura": okamura.to_record(),
-            "chaunzwa": chaunzwa.to_record(),
-            "chaunzwa_gmm_components": [
-                {
-                    "component_id": c.component_id,
-                    "mu_hu": c.mu_hu,
-                    "weight": c.weight,
-                    "group": (
-                        "exclude"
-                        if c.component_id in set(chaunzwa.exclude_component_ids)
-                        else (
-                            "adipose"
-                            if c.component_id in set(chaunzwa.adipose_component_ids)
-                            else "nonadipose"
-                        )
-                    ),
-                }
-                for c in (chaunzwa.gmm.components if chaunzwa.gmm is not None else [])
-            ],
         }
         fold_results.append(fold_result)
 
         print(
             f"[fold-{fold_id}] trq_voxels={fold_result['n_trq_voxels']} "
             f"okamura_etv={fold_result['okamura'].get('etv_ml')} "
-            f"chaunzwa_etv={fold_result['chaunzwa'].get('etv_ml')}"
         )
 
     summary = {
@@ -139,27 +118,15 @@ def main() -> int:
                 "fold",
                 "okamura_thymic_tissue_fraction",
                 "okamura_etv_ml",
-                "chaunzwa_ptt",
-                "chaunzwa_etv_ml",
-                "chaunzwa_gmm_mu_weight_group",
             ],
         )
         writer.writeheader()
         for r in fold_results:
-            gmm_brief = "; ".join(
-                [
-                    f"c{c['component_id']}:{c['mu_hu']:.2f}/{c['weight']:.3f}:{c['group']}"
-                    for c in r["chaunzwa_gmm_components"]
-                ]
-            )
             writer.writerow(
                 {
                     "fold": r["fold_id"],
                     "okamura_thymic_tissue_fraction": r["okamura"].get("thymic_tissue_fraction"),
                     "okamura_etv_ml": r["okamura"].get("etv_ml"),
-                    "chaunzwa_ptt": r["chaunzwa"].get("ptt"),
-                    "chaunzwa_etv_ml": r["chaunzwa"].get("etv_ml"),
-                    "chaunzwa_gmm_mu_weight_group": gmm_brief,
                 }
             )
 

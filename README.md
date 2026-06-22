@@ -4,6 +4,16 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
+<p align="center">
+  <img src="workflow.png" alt="Workflow" width="720">
+</p>
+
+<p align="center">
+  <img src="age_related_ETV_change.png" alt="Age-related ETV change" width="720">
+</p>
+
+Figures cited from Okamura YT et al., bioRxiv, 2023.
+
 Main readouts:
 
 - $A_{TRQ}$: representative HU value of the thymic region of quantification.
@@ -214,5 +224,5 @@ errors = batch.errors_to_frame()
 ## Coming soon: Methods of Chaunzwa et al.
 
 Chaunzwa et al. recently introduced an improved variant of the thymic
-composition analysis framework implemented in this package. Support
+composition analysis framework implemented in this package (Chaunzwa et al. bioRxiv, 2025. doi.org/10.1101/2025.10.27.25338565 , https://doi.org/10.1101/2025.10.20.25338395 ). Support
 for the Chaunzwa et al. workflow is planned for a future release.

@@ -16,14 +16,12 @@ from typing import Literal, Sequence, overload
 
 from .exceptions import SegmentorConfigurationError
 from ._version import __version__
-from .quantification.chaunzwa import ChaunzwaOptions, quantify_chaunzwa
+from .quantification.chaunzwa import ChaunzwaOptions
 from .quantification.okamura import OkamuraOptions, quantify_okamura
 from .results import (
     AnalysisResultBase,
-    AnalysisResultChaunzwa,
     AnalysisResultOkamura,
     BatchAnalysisResultBase,
-    BatchAnalysisResultChaunzwa,
     BatchAnalysisResultOkamura,
     BatchErrorRecord,
     DetailLevel,
@@ -40,7 +38,7 @@ _SEGMENTOR_CACHE_LOCK = threading.Lock()
 
 def list_methods() -> tuple[MethodName, ...]:
     """Return supported quantification method names."""
-    return ("okamura", "chaunzwa")
+    return ("okamura",)
 
 
 def _validate_method(method: str, *, function: str, study_id: str | None = None) -> MethodName:
@@ -337,16 +335,6 @@ def quantify(
 ) -> AnalysisResultOkamura: ...
 
 
-@overload
-def quantify(
-    segmentation: SegmentationResult,
-    *,
-    method: Literal["chaunzwa"],
-    options: ChaunzwaOptions | None = None,
-    detail: DetailLevel = "summary",
-) -> AnalysisResultChaunzwa: ...
-
-
 def quantify(
     segmentation: SegmentationResult,
     *,
@@ -364,9 +352,6 @@ def quantify(
     if method == "okamura":
         return quantify_okamura(segmentation, options=opt, detail=detail, meta=meta)
 
-    if method == "chaunzwa":
-        return quantify_chaunzwa(segmentation, options=opt, detail=detail, meta=meta)
-
     raise ValueError(f"Unsupported method: {method}")
 
 
@@ -382,20 +367,6 @@ def analyze(
     detail: DetailLevel = "summary",
     device: str = "auto",
 ) -> AnalysisResultOkamura: ...
-
-
-@overload
-def analyze(
-    image: ImageInput,
-    *,
-    method: Literal["chaunzwa"],
-    study_id: str | None = None,
-    segmentor: str | LoadedSegmentor | None = None,
-    revision: str | None = None,
-    options: ChaunzwaOptions | None = None,
-    detail: DetailLevel = "summary",
-    device: str = "auto",
-) -> AnalysisResultChaunzwa: ...
 
 
 def analyze(
@@ -436,21 +407,6 @@ def analyze_many(
     on_error: OnError = "record",
     device: str = "auto",
 ) -> BatchAnalysisResultOkamura: ...
-
-
-@overload
-def analyze_many(
-    images: Sequence[ImageInput],
-    *,
-    method: Literal["chaunzwa"],
-    study_ids: Sequence[str | None] | None = None,
-    segmentor: str | LoadedSegmentor | None = None,
-    revision: str | None = None,
-    options: ChaunzwaOptions | None = None,
-    detail: DetailLevel = "summary",
-    on_error: OnError = "record",
-    device: str = "auto",
-) -> BatchAnalysisResultChaunzwa: ...
 
 
 def analyze_many(
@@ -511,6 +467,4 @@ def analyze_many(
 
     if method == "okamura":
         return BatchAnalysisResultOkamura(method="okamura", results=tuple(results), errors=tuple(errors), n_requested=len(images))
-    if method == "chaunzwa":
-        return BatchAnalysisResultChaunzwa(method="chaunzwa", results=tuple(results), errors=tuple(errors), n_requested=len(images))
     raise ValueError(f"Unsupported method: {method}")
