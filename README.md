@@ -4,16 +4,6 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/yuki-okamura-med/thymus-quant/08dffb7fcfa744bcb863c67e53ea21a80f5e4027/workflow.png" alt="Workflow" width="720">
-</p>
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/yuki-okamura-med/thymus-quant/08dffb7fcfa744bcb863c67e53ea21a80f5e4027/age_related_ETV_change.png" alt="Age-related ETV change" width="720">
-</p>
-
-Figures cited from Okamura YT et al., bioRxiv, 2023.
-
 Main readouts:
 
 - $A_{TRQ}$: representative HU value of the thymic region of quantification.
