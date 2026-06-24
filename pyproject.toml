@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thymus-quant"
-version = "0.1.0a0"
+version = "0.1.0a1"
 description = "Thymic quantification toolkit"
 readme = "README.md"
 requires-python = ">=3.10"

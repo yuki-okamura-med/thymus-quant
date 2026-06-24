@@ -215,8 +215,6 @@ errors = batch.errors_to_frame()
 
 `on_error` values are `raise`, `record`, and `skip`.
 
-## Coming soon: Methods of Chaunzwa et al.
+## Coming soon: Expanded thymic composition analysis workflows.
 
-Chaunzwa et al. recently introduced an improved variant of the thymic
-composition analysis framework implemented in this package (Chaunzwa et al. bioRxiv, 2025. https://doi.org/10.1101/2025.10.27.25338565 , https://doi.org/10.1101/2025.10.20.25338395 ). Support
-for the Chaunzwa et al. workflow is planned for a future release.
+Recent work by Chaunzwa et al. introduced an enhanced thymic composition analysis framework that builds upon and extends the methodology currently implemented in this package (Chaunzwa et al., medRxiv, 2025: https://doi.org/10.1101/2025.10.27.25338565, https://doi.org/10.1101/2025.10.20.25338395). Support for this framework is planned for a future release.
