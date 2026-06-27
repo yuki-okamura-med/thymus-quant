@@ -4,16 +4,6 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
-<p align="center">
-  <img src="workflow.png" alt="Workflow" width="720">
-</p>
-
-<p align="center">
-  <img src="age_related_ETV_change.png" alt="Age-related ETV change" width="720">
-</p>
-
-Figures cited from Okamura YT et al., bioRxiv, 2023.
-
 Main readouts:
 
 - $A_{TRQ}$: representative HU value of the thymic region of quantification.
@@ -31,16 +21,13 @@ Main APIs:
 
 ## Installation
 
-Recommended installation:
-```bash
-pip install "thymus-quant[segmentation]"
-```
-
-If you already have masks or use your own segmentation model and do not need
-`trqseg_v1` inference:
+Install from PyPI:
 ```bash
 pip install thymus-quant
 ```
+
+This installs the dependencies needed for both quantification and TRQseg-v1
+segmentation.
 
 Model weights are loaded through the Hugging Face cache unless `local_files_only`
 or an explicit local mirror is configured. A local TRQseg-v1 mirror may be set
@@ -225,8 +212,6 @@ errors = batch.errors_to_frame()
 
 `on_error` values are `raise`, `record`, and `skip`.
 
-## Coming soon: Methods of Chaunzwa et al.
+## Coming soon: Expanded thymic composition analysis workflows.
 
-Chaunzwa et al. recently introduced an improved variant of the thymic
-composition analysis framework implemented in this package (Chaunzwa et al. bioRxiv, 2025. https://doi.org/10.1101/2025.10.27.25338565 , https://doi.org/10.1101/2025.10.20.25338395 ). Support
-for the Chaunzwa et al. workflow is planned for a future release.
+Recent work by Chaunzwa et al. introduced an enhanced thymic composition analysis framework that builds upon and extends the methodology currently implemented in this package (Chaunzwa et al., medRxiv, 2025: https://doi.org/10.1101/2025.10.27.25338565, https://doi.org/10.1101/2025.10.20.25338395). Support for this framework is planned for a future release.
