@@ -21,16 +21,13 @@ Main APIs:
 
 ## Installation
 
-Recommended installation:
-```bash
-pip install "thymus-quant[segmentation]"
-```
-
-If you already have masks or use your own segmentation model and do not need
-`trqseg_v1` inference:
+Install from PyPI:
 ```bash
 pip install thymus-quant
 ```
+
+This installs the dependencies needed for both quantification and TRQseg-v1
+segmentation.
 
 Model weights are loaded through the Hugging Face cache unless `local_files_only`
 or an explicit local mirror is configured. A local TRQseg-v1 mirror may be set
