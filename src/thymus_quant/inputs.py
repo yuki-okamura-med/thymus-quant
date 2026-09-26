@@ -116,8 +116,9 @@ def validate_binary_mask(mask: Any, *, ct_shape: tuple[int, int, int] | None = N
         finite = np.isfinite(arr)
         if not np.all(finite):
             raise InputValidationError(f"{name} contains non-finite values")
-        uniq = np.unique(arr)
-        if not set(uniq.tolist()).issubset({0, 1, 0.0, 1.0}):
+        # Linear-time 0/1 check; np.unique (a full sort) is only needed for the error message.
+        if not np.all((arr == 0) | (arr == 1)):
+            uniq = np.unique(arr)
             raise InputValidationError(f"{name} must be bool or binary 0/1 data; got values {uniq[:8].tolist()}")
         out = arr.astype(bool)
     if not out.any():
