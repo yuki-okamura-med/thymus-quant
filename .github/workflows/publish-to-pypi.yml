@@ -1,0 +1,100 @@
+name: Publish to PyPI
+
+# Runs on every push to main (including PR merges). Publishes only when the
+# version in pyproject.toml is not on PyPI yet; otherwise it does nothing.
+# Authentication is PyPI Trusted Publishing (no API token is stored).
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: publish-to-pypi
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      publish: ${{ steps.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: check
+        name: Compare the package version with PyPI
+        run: |
+          python - <<'PY'
+          import os, re, sys, tomllib, urllib.error, urllib.request
+
+          with open("pyproject.toml", "rb") as f:
+              version = tomllib.load(f)["project"]["version"]
+          with open("src/thymus_quant/_version.py", encoding="utf-8") as f:
+              m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', f.read())
+          runtime = m.group(1) if m else None
+          if runtime != version:
+              sys.exit(f"version mismatch: pyproject.toml={version!r} _version.py={runtime!r}")
+
+          url = f"https://pypi.org/pypi/thymus-quant/{version}/json"
+          try:
+              urllib.request.urlopen(url, timeout=30)
+              publish = "false"
+              print(f"{version} is already on PyPI; nothing to publish.")
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+              publish = "true"
+              print(f"{version} is not on PyPI yet; it will be built and published.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={version}\npublish={publish}\n")
+          PY
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Check the built file names
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          ls -l dist
+          test -f "dist/thymus_quant-${VERSION}.tar.gz"
+          test -f "dist/thymus_quant-${VERSION}-py3-none-any.whl"
+          test "$(ls dist | wc -l)" -eq 2
+      - name: Run unit tests
+        run: |
+          python -m pip install -e ".[dev]"
+          pytest -q
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  publish:
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/thymus-quant/${{ needs.check-version.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
