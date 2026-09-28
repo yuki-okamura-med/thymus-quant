@@ -7,13 +7,15 @@ import warnings
 
 import nibabel as nib
 import numpy as np
-from scipy.stats import gaussian_kde
 
 from ..exceptions import MissingGeometryError, NumericalError
 from ..inputs import validate_binary_mask, validate_mask_has_finite_ct
 from ..results import AnalysisResultOkamura, DetailLevel, OkamuraMemberResult, OkamuraQC, ResultMeta
 from ..segmentors import SegmentationResult
 from .common import dice, voxvol_ml
+# Same density as scipy.stats.gaussian_kde(values), computed per distinct HU value (see kde.py).
+# Kept under the name `gaussian_kde` so tests and callers can still patch it here.
+from .kde import GroupedGaussianKDE as gaussian_kde
 
 
 @dataclass(slots=True)
@@ -123,6 +125,22 @@ def _jsd_from_values(v1: np.ndarray, v2: np.ndarray) -> float:
     return float(0.5 * np.sum(p * np.log2(p / m)) + 0.5 * np.sum(q * np.log2(q / m)))
 
 
+def _union_bbox(masks: list[np.ndarray]) -> tuple[slice, ...]:
+    """Bounding box (as slices) of the union of same-shape masks; the full extent if all are empty."""
+    shape = np.asarray(masks[0]).shape
+    union = np.zeros(shape, dtype=bool)
+    for m in masks:
+        union |= np.asarray(m) > 0
+    if not union.any():
+        return tuple(slice(0, s) for s in shape)
+    box = []
+    for axis in range(union.ndim):
+        other = tuple(k for k in range(union.ndim) if k != axis)
+        idx = np.flatnonzero(union.any(axis=other))
+        box.append(slice(int(idx[0]), int(idx[-1]) + 1))
+    return tuple(box)
+
+
 def _extract_member_ct_and_img(member) -> tuple[np.ndarray, nib.spatialimages.SpatialImage | None]:
     """Extract CT array and image context from member payload.
 
@@ -207,7 +225,8 @@ def quantify_okamura(
             ct, spacing, img = _extract_ct_and_spacing(segmentation, m)
             mask = validate_binary_mask(m.trq_mask, ct_shape=tuple(ct.shape), name=f"member {m.member_id} trq_mask")
             validate_mask_has_finite_ct(mask, ct, name=f"member {m.member_id} trq_mask")
-            vals = np.asarray(ct, dtype=float)[mask]
+            # Index first, then cast: avoids a float64 copy of the whole CT volume per member.
+            vals = np.asarray(ct)[mask].astype(float)
             vals = vals[np.isfinite(vals)]
             mode, second_ratio = _kde_mode_and_second_ratio(vals)
             vol = voxvol_ml(mask, img, spacing_mm=spacing)
@@ -301,13 +320,15 @@ def quantify_okamura(
     if len(use_indices) >= 2:
         jsds: list[float] = []
         dscs: list[float] = []
+        # DSC only depends on voxels inside the union of the masks; crop to its bounding box.
+        box = _union_bbox([masks[i] for i in use_indices])
         for a in range(len(use_indices)):
             for b in range(a + 1, len(use_indices)):
                 i = use_indices[a]
                 j = use_indices[b]
                 if values_list[i].size and values_list[j].size:
                     jsds.append(_jsd_from_values(values_list[i], values_list[j]))
-                dscs.append(dice(masks[i], masks[j]))
+                dscs.append(dice(masks[i][box], masks[j][box]))
         mean_jsd = float(np.mean(jsds)) if jsds else None
         mean_dsc = float(np.mean(dscs)) if dscs else None
         hu_var = float(np.var([modes[i] for i in use_indices], ddof=1)) if len(use_indices) >= 2 else None
