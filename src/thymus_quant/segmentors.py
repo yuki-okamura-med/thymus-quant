@@ -34,6 +34,17 @@ def _load_image(image: ImageInput) -> nib.spatialimages.SpatialImage:
     return nib.load(str(image))
 
 
+def _majority_vote(masks: Sequence[Any]) -> np.ndarray:
+    """Voxel-wise majority vote, identical to ``np.mean(np.stack(masks), axis=0) >= 0.5`` for binary masks.
+
+    Counts votes in an integer array instead of stacking all members as float64.
+    """
+    votes = np.zeros(np.asarray(masks[0]).shape, dtype=np.uint32)
+    for mask in masks:
+        votes += np.asarray(mask) > 0
+    return 2 * votes >= len(masks)
+
+
 def _simple_trq_segmentation(ct: np.ndarray) -> np.ndarray:
     """Compute simple debug-only heuristic TRQ mask."""
     finite = np.isfinite(ct)
@@ -303,7 +314,7 @@ class LoadedSegmentor:
         fused = (
             member_outputs[0].trq_mask
             if len(member_outputs) == 1
-            else (np.mean(np.stack([x.trq_mask for x in member_outputs], axis=0), axis=0) >= 0.5).astype(np.uint8)
+            else _majority_vote([x.trq_mask for x in member_outputs]).astype(np.uint8)
         )
 
         return SegmentationResult(
@@ -408,7 +419,7 @@ class SegmentationResult:
             members.append(
                 SegmentationMember(member_id=str(member_id), trq_mask=mask, raw_output={"backend": "external_mask"})
             )
-        fused = (np.mean(np.stack(masks, axis=0), axis=0) >= 0.5)
+        fused = _majority_vote(masks)
         return cls(
             study_id=study_id,
             segmentor=None,
