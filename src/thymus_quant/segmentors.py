@@ -10,6 +10,7 @@ This module provides:
 """
 
 import os
+import logging
 import warnings
 import threading
 from dataclasses import dataclass, field
@@ -25,6 +26,50 @@ if TYPE_CHECKING:
     ImageInput: TypeAlias = Union[str, os.PathLike[str], nib.spatialimages.SpatialImage]
 else:
     ImageInput: TypeAlias = Any
+
+logger = logging.getLogger(__name__)
+
+# Voxel order of the TRQseg-v1 training images (dcm2niix output of axial CT):
+# first array axis toward the patient's left, second toward anterior, third toward superior.
+MODEL_ORIENTATION: tuple[str, str, str] = ("L", "A", "S")
+_IDENTITY_ORNT = np.array([[0, 1], [1, 1], [2, 1]], dtype=float)
+
+
+def _model_orientation_transforms(
+    orientation: Sequence[str] | None,
+) -> tuple[np.ndarray | None, np.ndarray | None, str]:
+    """Return ``(to_model, from_model, status)`` nibabel orientation transforms.
+
+    Only axis permutation and flips are used (no interpolation), so the
+    transform is exactly reversible. ``status`` is one of:
+
+    - ``"model_orientation"``: input is already LAS; no transform.
+    - ``"reoriented"``: input voxel order differs from LAS; transforms returned.
+    - ``"assumed_model_orientation"``: no orientation is known (e.g. NumPy input
+      without affine); the array is used as given, as before.
+    - ``"unresolved"``: orientation could not be interpreted; the array is used
+      as given, as before.
+    """
+    if orientation is None:
+        return None, None, "assumed_model_orientation"
+    try:
+        src = nib.orientations.axcodes2ornt(tuple(str(c) for c in orientation))
+    except Exception:
+        return None, None, "unresolved"
+    if src.shape != (3, 2) or not np.all(np.isfinite(src)):
+        return None, None, "unresolved"
+    dst = nib.orientations.axcodes2ornt(MODEL_ORIENTATION)
+    to_model = nib.orientations.ornt_transform(src, dst)
+    if np.array_equal(to_model, _IDENTITY_ORNT):
+        return None, None, "model_orientation"
+    return to_model, nib.orientations.ornt_transform(dst, src), "reoriented"
+
+
+def _apply_ornt(arr: np.ndarray, ornt: np.ndarray | None) -> np.ndarray:
+    """Apply a nibabel orientation transform (permute/flip only) and return a contiguous array."""
+    if ornt is None:
+        return arr
+    return np.ascontiguousarray(nib.orientations.apply_orientation(arr, ornt))
 
 
 def _load_image(image: ImageInput) -> nib.spatialimages.SpatialImage:
@@ -248,6 +293,15 @@ class LoadedSegmentor:
         -------
         SegmentationResult
             Includes representative/fused mask and member-level masks.
+
+        Notes
+        -----
+        TRQseg-v1 was trained on LAS voxel order. When the input orientation
+        (from the affine, or ``ImageContext.orientation``) is different, the
+        voxel array is permuted/flipped to LAS for the network only, and the
+        predicted masks are permuted/flipped back. The returned masks are on
+        the input grid in the input voxel order. No interpolation is done.
+        Inputs without a known orientation are used as given (assumed LAS).
         """
         context = load_image_context(image)
         ct = np.asarray(context.ct_hu, dtype=np.float32)
@@ -255,10 +309,32 @@ class LoadedSegmentor:
         self._ensure_models_loaded()
 
         member_outputs: list[SegmentationMember] = []
+        preprocessing: dict[str, Any] | None = None
 
         # NN path
         if self._models:
-            x = ct[::2, ::2, :].transpose(2, 0, 1)
+            to_model, from_model, orientation_status = _model_orientation_transforms(context.orientation)
+            input_orientation = None if context.orientation is None else "".join(str(c) for c in context.orientation)
+            preprocessing = {
+                "model_orientation": "".join(MODEL_ORIENTATION),
+                "input_orientation": input_orientation,
+                "orientation_status": orientation_status,
+                "reoriented_for_model": to_model is not None,
+            }
+            if to_model is not None:
+                logger.info(
+                    "Input orientation %s; reorienting voxel array to model orientation %s for segmentation.",
+                    input_orientation,
+                    "".join(MODEL_ORIENTATION),
+                )
+            elif orientation_status == "unresolved":
+                logger.warning(
+                    "Input orientation %s could not be interpreted; the voxel array is used as given.",
+                    context.orientation,
+                )
+            ct_model = _apply_ornt(ct, to_model)
+
+            x = ct_model[::2, ::2, :].transpose(2, 0, 1)
             x = np.clip(x, -1500, 1500) / 1500.0
             x = np.stack([x, x, x], axis=1).astype(np.float32)
 
@@ -269,10 +345,10 @@ class LoadedSegmentor:
 
                 logits = self._predict_logits(model, x)
                 pred_ds = np.argmax(logits, axis=1).astype(np.uint8)
-                pred_xyz = _upsample_label_to_xyz(pred_ds, ct.shape[0], ct.shape[1])
+                pred_xyz = _upsample_label_to_xyz(pred_ds, ct_model.shape[0], ct_model.shape[1])
 
-                trq = (pred_xyz == 2).astype(np.uint8)
-                airway = (pred_xyz == 1).astype(np.uint8)
+                trq = _apply_ornt((pred_xyz == 2).astype(np.uint8), from_model)
+                airway = _apply_ornt((pred_xyz == 1).astype(np.uint8), from_model)
 
                 member_outputs.append(
                     SegmentationMember(
@@ -284,6 +360,7 @@ class LoadedSegmentor:
                             "preprocessing_version": self.info.preprocessing_version,
                             "input_shape": tuple(ct.shape),
                             "output_grid": "input",
+                            **preprocessing,
                         },
                     )
                 )
@@ -325,6 +402,7 @@ class LoadedSegmentor:
             airway_mask=None,
             members=tuple(member_outputs),
             merge_strategy="none" if len(member_outputs) == 1 else "vote",
+            preprocessing=preprocessing,
         )
 
 
@@ -349,6 +427,7 @@ class SegmentationResult:
     airway_mask: Any | None = None
     members: Sequence[SegmentationMember] = field(default_factory=tuple)
     merge_strategy: Literal["none", "vote", "union", "intersection", "custom"] = "none"
+    preprocessing: dict[str, Any] | None = None
 
     @classmethod
     def from_mask(
@@ -452,7 +531,9 @@ class SegmentationResult:
                 "spacing_mm": list(self.image.spacing_mm),
                 "orientation": None if self.image.orientation is None else list(self.image.orientation),
                 "source": self.image.source,
+                "geometry": self.image.geometry,
             },
+            "preprocessing": self.preprocessing,
             "merge_strategy": self.merge_strategy,
             "n_members": len(self.members),
             "member_ids": [m.member_id for m in self.members],

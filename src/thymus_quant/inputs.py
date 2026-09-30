@@ -25,6 +25,7 @@ class ImageContext:
     affine: Any | None = None
     source: str | None = None
     orientation: tuple[str, str, str] | None = None
+    geometry: dict[str, Any] | None = None
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -38,6 +39,59 @@ def _orientation_from_affine(affine: Any | None) -> tuple[str, str, str] | None:
         return tuple(str(x) for x in nib.aff2axcodes(np.asarray(affine)))  # type: ignore[return-value]
     except Exception:
         return None
+
+
+def geometry_report(
+    affine: Any | None,
+    *,
+    spacing_mm: Any | None = None,
+    image: Any | None = None,
+) -> dict[str, Any] | None:
+    """Describe the voxel-to-world geometry of an input for QC.
+
+    Nothing here changes the image. The values are recorded so that oblique,
+    sheared or inconsistent inputs can be found later:
+
+    - ``voxel_sizes_affine_mm``: column norms of the affine.
+    - ``voxel_size_mismatch_max_mm``: largest difference between ``spacing_mm``
+      (header zooms) and the affine column norms.
+    - ``obliquity_max_deg``: largest angle between a voxel axis and the nearest
+      world axis (``nibabel.affines.obliquity``).
+    - ``shear_max``: largest off-diagonal term of the direction-cosine Gram
+      matrix (0 for an orthogonal grid).
+    - ``qform_code`` / ``sform_code`` and ``qform_sform_max_abs_diff`` when a
+      NIfTI image is given and both transforms are set.
+    """
+    if affine is None:
+        return None
+    try:
+        aff = np.asarray(affine, dtype=float)
+        if aff.shape != (4, 4) or not np.all(np.isfinite(aff)):
+            return {"valid_affine": False}
+        rzs = aff[:3, :3]
+        sizes = np.linalg.norm(rzs, axis=0)
+        if not np.all(sizes > 0):
+            return {"valid_affine": False}
+        cosines = rzs / sizes
+        report: dict[str, Any] = {
+            "valid_affine": True,
+            "voxel_sizes_affine_mm": [float(v) for v in sizes],
+            "obliquity_max_deg": float(np.degrees(np.max(np.abs(nib.affines.obliquity(aff))))),
+            "shear_max": float(np.max(np.abs(cosines.T @ cosines - np.eye(3)))),
+        }
+        if spacing_mm is not None:
+            zooms = np.asarray(spacing_mm, dtype=float)[:3]
+            report["voxel_size_mismatch_max_mm"] = float(np.max(np.abs(zooms - sizes)))
+        if image is not None and hasattr(image, "get_qform") and hasattr(image, "get_sform"):
+            qform, qcode = image.get_qform(coded=True)
+            sform, scode = image.get_sform(coded=True)
+            report["qform_code"] = int(qcode)
+            report["sform_code"] = int(scode)
+            if qform is not None and sform is not None and int(qcode) > 0 and int(scode) > 0:
+                report["qform_sform_max_abs_diff"] = float(np.max(np.abs(np.asarray(qform) - np.asarray(sform))))
+        return report
+    except Exception:
+        return {"valid_affine": False}
 
 
 def validate_spacing(spacing_mm: tuple[float, float, float] | list[float] | np.ndarray | None) -> tuple[float, float, float]:
@@ -85,6 +139,7 @@ def load_image_context(image: Any, *, source: str | None = None) -> ImageContext
         affine=np.asarray(img.affine),
         source=src,
         orientation=_orientation_from_affine(img.affine),
+        geometry=geometry_report(img.affine, spacing_mm=spacing, image=img),
     )
 
 
@@ -100,7 +155,14 @@ def make_image_context(
     ct = validate_ct_hu(ct_hu)
     spacing = validate_spacing(spacing_mm)
     orient = orientation if orientation is not None else _orientation_from_affine(affine)
-    return ImageContext(ct_hu=ct, spacing_mm=spacing, affine=affine, source=source, orientation=orient)
+    return ImageContext(
+        ct_hu=ct,
+        spacing_mm=spacing,
+        affine=affine,
+        source=source,
+        orientation=orient,
+        geometry=geometry_report(affine, spacing_mm=spacing),
+    )
 
 
 def validate_binary_mask(mask: Any, *, ct_shape: tuple[int, int, int] | None = None, name: str = "mask") -> np.ndarray:
