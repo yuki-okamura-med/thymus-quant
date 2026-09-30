@@ -232,6 +232,8 @@ class AnalysisResultOkamura(AnalysisResultBase):
 
     def to_record(self) -> dict[str, Any]:
         """Return flat study-level table record."""
+        meta = self.meta
+        orientation = None if meta is None or meta.orientation is None else "".join(str(c) for c in meta.orientation)
         return {
             "study_id": self.study_id,
             "method": self.method,
@@ -254,6 +256,9 @@ class AnalysisResultOkamura(AnalysisResultBase):
             "qc_mean_pairwise_dsc": None if self.qc is None else self.qc.mean_pairwise_dsc,
             "qc_hu_variance": None if self.qc is None else self.qc.hu_variance,
             "qc_valid_member_count": None if self.qc is None else self.qc.valid_member_count,
+            "input_orientation": orientation,
+            "orientation_status": None if meta is None else meta.orientation_status,
+            "reoriented_for_model": None if meta is None else meta.reoriented_for_model,
         }
 
     def to_frame(self) -> "pd.DataFrame":

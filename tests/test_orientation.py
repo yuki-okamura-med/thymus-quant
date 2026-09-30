@@ -188,6 +188,20 @@ def test_quantify_meta_and_to_dict_record_orientation(fake_segmentor):
     assert d["preprocessing"]["reoriented_for_model"] is True
     assert d["image"]["geometry"]["obliquity_max_deg"] == pytest.approx(0.0, abs=1e-6)
     assert res.to_dict()["meta"]["reoriented_for_model"] is True
+    rec = res.to_record()
+    assert rec["input_orientation"] == "LPS"
+    assert rec["orientation_status"] == "reoriented"
+    assert rec["reoriented_for_model"] is True
+    frame = res.to_frame()
+    assert list(frame["reoriented_for_model"]) == [True]
+
+
+def test_to_record_orientation_columns_for_las_and_array_inputs(fake_segmentor):
+    rec = tq.quantify(fake_segmentor.segment_trq(_las_image(), study_id="las"), method="okamura").to_record()
+    assert (rec["input_orientation"], rec["orientation_status"], rec["reoriented_for_model"]) == ("LAS", "model_orientation", False)
+    ctx = make_image_context(ct_hu=np.asarray(_las_image().dataobj), spacing_mm=(0.7, 0.7, 2.5))
+    rec = tq.quantify(fake_segmentor.segment_trq(ctx, study_id="arr"), method="okamura").to_record()
+    assert (rec["input_orientation"], rec["orientation_status"], rec["reoriented_for_model"]) == (None, "assumed_model_orientation", False)
 
 
 def test_external_mask_results_have_no_model_preprocessing():
@@ -199,6 +213,8 @@ def test_external_mask_results_have_no_model_preprocessing():
     assert seg.preprocessing is None
     assert res.meta.reoriented_for_model is None
     assert res.meta.geometry is None
+    rec = res.to_record()
+    assert (rec["input_orientation"], rec["orientation_status"], rec["reoriented_for_model"]) == (None, None, None)
 
 
 def test_geometry_report_orthogonal_oblique_sheared_and_forms():

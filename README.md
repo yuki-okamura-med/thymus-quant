@@ -177,7 +177,9 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
 - The handling is recorded in `SegmentationResult.preprocessing` and in the
   result metadata: `model_orientation`, `orientation_status`
   (`model_orientation`, `reoriented`, `assumed_model_orientation`, `unresolved`),
-  and `reoriented_for_model`. Reorientation is logged at INFO level by the
+  and `reoriented_for_model`. The same information is in the `input_orientation`,
+  `orientation_status` and `reoriented_for_model` columns of `to_record()` /
+  `to_frame()`. Reorientation is logged at INFO level by the
   `thymus_quant.segmentors` logger.
 - `geometry` (in `ImageContext`, `SegmentationResult.to_dict()["image"]` and the
   result metadata) records `voxel_sizes_affine_mm`, `voxel_size_mismatch_max_mm`,
