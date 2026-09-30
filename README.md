@@ -177,7 +177,9 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
 - The handling is recorded in `SegmentationResult.preprocessing` and in the
   result metadata: `model_orientation`, `orientation_status`
   (`model_orientation`, `reoriented`, `assumed_model_orientation`, `unresolved`),
-  and `reoriented_for_model`. Reorientation is logged at INFO level by the
+  and `reoriented_for_model`. The same information is in the `input_orientation`,
+  `orientation_status` and `reoriented_for_model` columns of `to_record()` /
+  `to_frame()`. Reorientation is logged at INFO level by the
   `thymus_quant.segmentors` logger.
 - `geometry` (in `ImageContext`, `SegmentationResult.to_dict()["image"]` and the
   result metadata) records `voxel_sizes_affine_mm`, `voxel_size_mismatch_max_mm`,
@@ -185,6 +187,25 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
   `sform_code` and `qform_sform_max_abs_diff`. These values are reported only;
   no thresholds are applied.
 - The heuristic segmentor (`heuristic_trq`, debug only) is not affected.
+
+### In-plane size
+
+The TRQseg-v1 training images were 512 x 512, and the network sees each slice
+downsampled by 2 (`ct[::2, ::2, :]`). Images of other in-plane sizes are
+segmented as given; they are not padded, cropped or resampled.
+
+- The in-plane size is checked after reorientation to LAS. When it is not
+  512 x 512, a WARNING is logged by the `thymus_quant.segmentors` logger and a
+  note is added to `result.warnings`. The note does not change `flags`,
+  `qc.status` or `qc.paper_criteria_met`.
+- `SegmentationResult.preprocessing`, the result metadata and the `to_record()` /
+  `to_frame()` columns record `inplane_shape`, `inplane_is_512` and
+  `network_pixel_mm` (the in-plane pixel size seen by the network, that is,
+  2 x the voxel spacing).
+- What matters most for the network is the pixel size (how large the anatomy
+  appears), not the matrix size itself. In our checks on two scans, padding a
+  512 x 512 image to 640 x 640 or cropping it to 448 x 448 changed the fold-0
+  mask only slightly (Dice 0.988 to 0.995 against the 512 x 512 result).
 
 ## Segmentor Options
 

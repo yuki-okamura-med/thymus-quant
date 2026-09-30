@@ -188,6 +188,20 @@ def test_quantify_meta_and_to_dict_record_orientation(fake_segmentor):
     assert d["preprocessing"]["reoriented_for_model"] is True
     assert d["image"]["geometry"]["obliquity_max_deg"] == pytest.approx(0.0, abs=1e-6)
     assert res.to_dict()["meta"]["reoriented_for_model"] is True
+    rec = res.to_record()
+    assert rec["input_orientation"] == "LPS"
+    assert rec["orientation_status"] == "reoriented"
+    assert rec["reoriented_for_model"] is True
+    frame = res.to_frame()
+    assert list(frame["reoriented_for_model"]) == [True]
+
+
+def test_to_record_orientation_columns_for_las_and_array_inputs(fake_segmentor):
+    rec = tq.quantify(fake_segmentor.segment_trq(_las_image(), study_id="las"), method="okamura").to_record()
+    assert (rec["input_orientation"], rec["orientation_status"], rec["reoriented_for_model"]) == ("LAS", "model_orientation", False)
+    ctx = make_image_context(ct_hu=np.asarray(_las_image().dataobj), spacing_mm=(0.7, 0.7, 2.5))
+    rec = tq.quantify(fake_segmentor.segment_trq(ctx, study_id="arr"), method="okamura").to_record()
+    assert (rec["input_orientation"], rec["orientation_status"], rec["reoriented_for_model"]) == (None, "assumed_model_orientation", False)
 
 
 def test_external_mask_results_have_no_model_preprocessing():
@@ -199,6 +213,10 @@ def test_external_mask_results_have_no_model_preprocessing():
     assert seg.preprocessing is None
     assert res.meta.reoriented_for_model is None
     assert res.meta.geometry is None
+    rec = res.to_record()
+    assert (rec["input_orientation"], rec["orientation_status"], rec["reoriented_for_model"]) == (None, None, None)
+    assert (rec["inplane_shape"], rec["inplane_is_512"], rec["network_pixel_mm"]) == (None, None, None)
+    assert not res.warnings
 
 
 def test_geometry_report_orthogonal_oblique_sheared_and_forms():
@@ -245,3 +263,59 @@ def test_heuristic_segmentor_is_unchanged():
     with pytest.warns(UserWarning):
         out = seg_h.segment_trq(img, study_id="h")
     assert out.preprocessing is None
+
+
+def _las_512(n_slices=3):
+    img = _las_image((512, 512, n_slices))
+    assert img.header.get_zooms()[:3] == pytest.approx((0.7, 0.7, 2.5))
+    return img
+
+
+def test_512_inplane_is_recorded_without_warning(fake_segmentor, caplog):
+    with caplog.at_level(logging.WARNING, logger="thymus_quant.segmentors"):
+        seg = fake_segmentor.segment_trq(_las_512(), study_id="512")
+    assert not any("not 512x512" in r.getMessage() for r in caplog.records)
+    assert seg.preprocessing["inplane_shape"] == [512, 512]
+    assert seg.preprocessing["inplane_is_512"] is True
+    assert seg.preprocessing["network_pixel_mm"] == pytest.approx([1.4, 1.4])
+    res = tq.quantify(seg, method="okamura")
+    assert not any("512x512" in w for w in res.warnings)
+    assert res.meta.inplane_shape == (512, 512)
+    assert res.meta.inplane_is_512 is True
+    rec = res.to_record()
+    assert rec["inplane_shape"] == "512x512"
+    assert rec["inplane_is_512"] is True
+    assert rec["network_pixel_mm"] == pytest.approx((1.4, 1.4))
+
+
+def test_non_512_is_warned_without_changing_qc(fake_segmentor, caplog):
+    with caplog.at_level(logging.WARNING, logger="thymus_quant.segmentors"):
+        seg = fake_segmentor.segment_trq(_las_image((15, 11, 4)), study_id="small")
+    assert any("In-plane size 15x11 is not 512x512" in r.getMessage() for r in caplog.records)
+    assert seg.preprocessing["inplane_is_512"] is False
+    res = tq.quantify(seg, method="okamura")
+    assert any("In-plane size 15x11 is not 512x512" in w for w in res.warnings)
+    assert res.to_record()["inplane_is_512"] is False
+    assert res.to_record()["inplane_shape"] == "15x11"
+
+    # the same segmentation marked as 512 gives the same QC: the note is informational only
+    seg.preprocessing = {**seg.preprocessing, "inplane_is_512": True}
+    res_512 = tq.quantify(seg, method="okamura")
+    assert not any("512x512" in w for w in res_512.warnings)
+    assert res.qc.status == res_512.qc.status
+    assert res.qc.paper_criteria_met == res_512.qc.paper_criteria_met
+    assert tuple(res.qc.flags) == tuple(res_512.qc.flags)
+    assert tuple(res.flags) == tuple(res_512.flags)
+    assert res.status == res_512.status
+    assert res.etv_ml == res_512.etv_ml
+
+
+def test_inplane_check_uses_model_orientation(fake_segmentor):
+    img_v = _reorient(_las_512(4), ("S", "A", "R"))
+    assert img_v.shape == (4, 512, 512)
+    assert img_v.header.get_zooms()[:3] == pytest.approx((2.5, 0.7, 0.7))
+    seg = fake_segmentor.segment_trq(img_v, study_id="sar")
+    assert seg.preprocessing["orientation_status"] == "reoriented"
+    assert seg.preprocessing["inplane_shape"] == [512, 512]
+    assert seg.preprocessing["inplane_is_512"] is True
+    assert seg.preprocessing["network_pixel_mm"] == pytest.approx([1.4, 1.4])

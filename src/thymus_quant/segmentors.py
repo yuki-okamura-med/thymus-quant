@@ -33,6 +33,21 @@ logger = logging.getLogger(__name__)
 # first array axis toward the patient's left, second toward anterior, third toward superior.
 MODEL_ORIENTATION: tuple[str, str, str] = ("L", "A", "S")
 _IDENTITY_ORNT = np.array([[0, 1], [1, 1], [2, 1]], dtype=float)
+# In-plane size of the TRQseg-v1 training images, and the in-plane downsampling
+# applied before the network (ct[::2, ::2, :]).
+TRAINING_INPLANE_SHAPE: tuple[int, int] = (512, 512)
+NETWORK_DOWNSAMPLE = 2
+
+
+def _spacing_in_model_order(spacing_mm: Sequence[float], to_model: np.ndarray | None) -> tuple[float, float, float]:
+    """Voxel spacing reordered like the array by ``to_model`` (flips do not change spacing)."""
+    spacing = tuple(float(v) for v in spacing_mm)
+    if to_model is None:
+        return spacing  # type: ignore[return-value]
+    out = [0.0, 0.0, 0.0]
+    for in_axis, (out_axis, _flip) in enumerate(to_model):
+        out[int(out_axis)] = spacing[in_axis]
+    return (out[0], out[1], out[2])
 
 
 def _model_orientation_transforms(
@@ -333,6 +348,26 @@ class LoadedSegmentor:
                     context.orientation,
                 )
             ct_model = _apply_ornt(ct, to_model)
+
+            # In-plane size and the pixel size seen by the network (recorded only; the image is not changed).
+            spacing_model = _spacing_in_model_order(context.spacing_mm, to_model)
+            inplane_shape = (int(ct_model.shape[0]), int(ct_model.shape[1]))
+            inplane_is_512 = inplane_shape == TRAINING_INPLANE_SHAPE
+            network_pixel_mm = [NETWORK_DOWNSAMPLE * spacing_model[0], NETWORK_DOWNSAMPLE * spacing_model[1]]
+            preprocessing.update({
+                "inplane_shape": list(inplane_shape),
+                "inplane_is_512": inplane_is_512,
+                "network_pixel_mm": network_pixel_mm,
+            })
+            if not inplane_is_512:
+                logger.warning(
+                    "In-plane size %dx%d is not 512x512 (the size of the TRQseg-v1 training images); the image is "
+                    "segmented as given (network pixel %.3f x %.3f mm). Results may be less reliable.",
+                    inplane_shape[0],
+                    inplane_shape[1],
+                    network_pixel_mm[0],
+                    network_pixel_mm[1],
+                )
 
             x = ct_model[::2, ::2, :].transpose(2, 0, 1)
             x = np.clip(x, -1500, 1500) / 1500.0
