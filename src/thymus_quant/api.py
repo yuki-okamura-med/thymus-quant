@@ -321,6 +321,9 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
         orientation_status=prep.get("orientation_status"),
         reoriented_for_model=prep.get("reoriented_for_model"),
         geometry=None if segmentation.image is None else segmentation.image.geometry,
+        inplane_shape=None if prep.get("inplane_shape") is None else tuple(prep["inplane_shape"]),
+        inplane_is_512=prep.get("inplane_is_512"),
+        network_pixel_mm=None if prep.get("network_pixel_mm") is None else tuple(prep["network_pixel_mm"]),
         library_version=__version__,
     )
 

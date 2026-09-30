@@ -79,6 +79,9 @@ class ResultMeta:
     orientation_status: str | None = None
     reoriented_for_model: bool | None = None
     geometry: dict[str, Any] | None = None
+    inplane_shape: tuple[int, int] | None = None
+    inplane_is_512: bool | None = None
+    network_pixel_mm: tuple[float, float] | None = None
 
 
 @dataclass(slots=True)
@@ -259,6 +262,9 @@ class AnalysisResultOkamura(AnalysisResultBase):
             "input_orientation": orientation,
             "orientation_status": None if meta is None else meta.orientation_status,
             "reoriented_for_model": None if meta is None else meta.reoriented_for_model,
+            "inplane_shape": None if meta is None or meta.inplane_shape is None else "x".join(str(v) for v in meta.inplane_shape),
+            "inplane_is_512": None if meta is None else meta.inplane_is_512,
+            "network_pixel_mm": None if meta is None or meta.network_pixel_mm is None else tuple(meta.network_pixel_mm),
         }
 
     def to_frame(self) -> "pd.DataFrame":

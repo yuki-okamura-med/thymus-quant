@@ -364,6 +364,15 @@ def quantify_okamura(
         met = False if met is True else met
         qc_status = "check" if qc_status != "failed" else qc_status
 
+    # Informational only: does not change flags, QC status or paper_criteria_met.
+    prep = segmentation.preprocessing or {}
+    if prep.get("inplane_is_512") is False:
+        shape = prep.get("inplane_shape") or ["?", "?"]
+        warnings_out.append(
+            f"In-plane size {shape[0]}x{shape[1]} is not 512x512 (the size of the TRQseg-v1 training images); "
+            "the image was segmented as given. Results may be less reliable."
+        )
+
     qc = OkamuraQC(
         status=qc_status,
         paper_criteria_met=met,
