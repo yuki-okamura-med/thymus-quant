@@ -75,6 +75,10 @@ class ResultMeta:
     options: dict[str, Any] = field(default_factory=dict)
     experimental: bool = False
     library_version: str | None = None
+    model_orientation: str | None = None
+    orientation_status: str | None = None
+    reoriented_for_model: bool | None = None
+    geometry: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
