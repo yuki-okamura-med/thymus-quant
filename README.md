@@ -4,6 +4,16 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
+From version 0.1.0a4, thymus-quant checks the voxel order (orientation) of the
+input image and, when needed, reorders the voxels to the order used for training
+(LAS) before segmentation. Earlier versions used the voxel array as stored in the
+file. If your NIfTI files were not in LAS order (for example, files written by
+ITK or SimpleITK, which are usually LPS, or files reoriented to RAS), the
+segmentation with earlier versions may have been poor, and we recommend running
+those images again with 0.1.0a4 or later. You can check the voxel order of a file
+with `nibabel.aff2axcodes(nibabel.load(path).affine)`; see
+[Voxel order (orientation)](#voxel-order-orientation) for details.
+
 Main readouts:
 
 - $A_{TRQ}$: representative HU value of the thymic region of quantification.
@@ -134,17 +144,68 @@ Data contract:
 - CT and mask shapes must match exactly.
 - `spacing_mm` is 3 positive finite values in millimeters.
 - `spacing_mm` is normalized to Python floats and used for voxel-volume
-  calculation. It is not compared against affine/header spacing.
+  calculation. It is not changed; its difference from the affine column norms
+  is recorded in the geometry report (see below).
 - External CT/mask inputs are not resampled, cropped, padded, flipped, or
   permuted. Shape mismatches raise `InputValidationError` instead of being
   repaired automatically.
 - Masked CT voxels must contain at least one finite HU value.
 - DICOM directories are not directly supported by the public API.
-- Orientation is recorded from the affine when available. The package does not
-  silently flip or permute axes.
-- Current TRQseg-v1 preprocessing records input/output shapes and assumes the
-  returned mask is on the input grid. Inputs outside the reference preprocessing
-  domain should be treated cautiously until a pinned regression fixture exists.
+- Current TRQseg-v1 preprocessing records input/output shapes and returns masks
+  on the input grid. Inputs outside the reference preprocessing domain should be
+  treated cautiously until a pinned regression fixture exists.
+
+### Voxel order (orientation)
+
+TRQseg-v1 segments each axial slice as a 2D image and was trained on NIfTI files
+converted from DICOM with dcm2niix, which stores axial CT in LAS voxel order
+(first array axis toward the patient's left, second toward anterior, third toward
+superior; `nibabel.aff2axcodes(img.affine) == ("L", "A", "S")`). The network does
+not read the affine, so an array stored in another order (for example LPS, the
+usual result of converting DICOM with ITK/SimpleITK, or RAS after
+`nibabel.as_closest_canonical`) is seen flipped or permuted.
+
+- For TRQseg-v1 segmentation, when the input orientation is known and is not LAS,
+  the voxel array is permuted/flipped to LAS for the network only, and the
+  predicted masks are permuted/flipped back. No interpolation is done. Returned
+  masks are on the input grid, in the input voxel order.
+- Orientation is taken from the affine of NIfTI/nibabel inputs, or from
+  `ImageContext.orientation` / `make_image_context(..., orientation=...)`.
+  Arrays without affine or orientation are used as given (assumed LAS).
+- LAS inputs take the same path as before, with identical results.
+- Oblique or sheared affines are not resampled. Their geometry is recorded.
+- The handling is recorded in `SegmentationResult.preprocessing` and in the
+  result metadata: `model_orientation`, `orientation_status`
+  (`model_orientation`, `reoriented`, `assumed_model_orientation`, `unresolved`),
+  and `reoriented_for_model`. The same information is in the `input_orientation`,
+  `orientation_status` and `reoriented_for_model` columns of `to_record()` /
+  `to_frame()`. Reorientation is logged at INFO level by the
+  `thymus_quant.segmentors` logger.
+- `geometry` (in `ImageContext`, `SegmentationResult.to_dict()["image"]` and the
+  result metadata) records `voxel_sizes_affine_mm`, `voxel_size_mismatch_max_mm`,
+  `obliquity_max_deg`, `shear_max`, and, for NIfTI images, `qform_code`,
+  `sform_code` and `qform_sform_max_abs_diff`. These values are reported only;
+  no thresholds are applied.
+- The heuristic segmentor (`heuristic_trq`, debug only) is not affected.
+
+### In-plane size
+
+The TRQseg-v1 training images were 512 x 512, and the network sees each slice
+downsampled by 2 (`ct[::2, ::2, :]`). Images of other in-plane sizes are
+segmented as given; they are not padded, cropped or resampled.
+
+- The in-plane size is checked after reorientation to LAS. When it is not
+  512 x 512, a WARNING is logged by the `thymus_quant.segmentors` logger and a
+  note is added to `result.warnings`. The note does not change `flags`,
+  `qc.status` or `qc.paper_criteria_met`.
+- `SegmentationResult.preprocessing`, the result metadata and the `to_record()` /
+  `to_frame()` columns record `inplane_shape`, `inplane_is_512` and
+  `network_pixel_mm` (the in-plane pixel size seen by the network, that is,
+  2 x the voxel spacing).
+- What matters most for the network is the pixel size (how large the anatomy
+  appears), not the matrix size itself. In our checks on two scans, padding a
+  512 x 512 image to 640 x 640 or cropping it to 448 x 448 changed the fold-0
+  mask only slightly (Dice 0.988 to 0.995 against the 512 x 512 result).
 
 ## Segmentor Options
 

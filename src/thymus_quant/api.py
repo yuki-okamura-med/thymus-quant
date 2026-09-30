@@ -300,6 +300,7 @@ def segment_trq(
 def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLevel) -> ResultMeta:
     """Construct common result metadata from segmentation context."""
     sinfo = segmentation.segmentor
+    prep = segmentation.preprocessing or {}
     return ResultMeta(
         study_id=segmentation.study_id,
         method=method,
@@ -316,6 +317,13 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
         image_shape=None if segmentation.image is None else tuple(segmentation.image.shape),
         spacing_mm=None if segmentation.image is None else tuple(segmentation.image.spacing_mm),
         orientation=None if segmentation.image is None else segmentation.image.orientation,
+        model_orientation=prep.get("model_orientation"),
+        orientation_status=prep.get("orientation_status"),
+        reoriented_for_model=prep.get("reoriented_for_model"),
+        geometry=None if segmentation.image is None else segmentation.image.geometry,
+        inplane_shape=None if prep.get("inplane_shape") is None else tuple(prep["inplane_shape"]),
+        inplane_is_512=prep.get("inplane_is_512"),
+        network_pixel_mm=None if prep.get("network_pixel_mm") is None else tuple(prep["network_pixel_mm"]),
         library_version=__version__,
     )
 
