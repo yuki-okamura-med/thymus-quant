@@ -4,6 +4,16 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
+From version 0.1.0a4, thymus-quant checks the voxel order (orientation) of the
+input image and, when needed, reorders the voxels to the order used for training
+(LAS) before segmentation. Earlier versions used the voxel array as stored in the
+file. If your NIfTI files were not in LAS order (for example, files written by
+ITK or SimpleITK, which are usually LPS, or files reoriented to RAS), the
+segmentation with earlier versions may have been poor, and we recommend running
+those images again with 0.1.0a4 or later. You can check the voxel order of a file
+with `nibabel.aff2axcodes(nibabel.load(path).affine)`; see
+[Voxel order (orientation)](#voxel-order-orientation) for details.
+
 Main readouts:
 
 - $A_{TRQ}$: representative HU value of the thymic region of quantification.
