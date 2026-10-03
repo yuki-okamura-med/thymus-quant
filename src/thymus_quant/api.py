@@ -453,6 +453,9 @@ def analyze_many(
                 detail=detail,
                 device=device,
             )
+            # Failed inputs have no row in to_frame(), so record the position in `images`.
+            if r.meta is not None:
+                r.meta.input_index = i
             results.append(r)
         except Exception as e:
             if on_error == "raise":

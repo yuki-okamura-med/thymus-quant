@@ -297,6 +297,11 @@ errors = batch.errors_to_frame()
 
 `on_error` values are `raise`, `record`, and `skip`.
 
+Inputs that fail have no row in `batch.to_frame()`, so match rows to inputs by
+the `input_index` column (the position in `paths`), not by row position.
+`input_source` is the file path for path inputs (None for in-memory images).
+`errors_to_frame()` has the same `input_index` for the failed inputs.
+
 ## Coming soon: Expanded thymic composition analysis workflows.
 
 Recent work by Chaunzwa et al. introduced an enhanced thymic composition analysis framework that builds upon and extends the methodology currently implemented in this package (Chaunzwa et al., medRxiv, 2025: https://doi.org/10.1101/2025.10.27.25338565, https://doi.org/10.1101/2025.10.20.25338395). Support for this framework is planned for a future release.

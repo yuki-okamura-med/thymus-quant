@@ -47,3 +47,32 @@ def test_batch_ordering_and_errors_preserved():
     assert batch.n_succeeded == 0
     assert batch.n_failed == 2
     assert [e.input_index for e in batch.errors] == [0, 1]
+
+
+def _write_ct(path, offset):
+    import nibabel as nib
+
+    rng = np.random.default_rng(int(offset) + 100)
+    ct = rng.normal(-1000.0, 5.0, size=(24, 24, 12)).astype(np.float32)
+    ct[4:20, 2:12, 3:9] = rng.normal(-40.0 + offset, 10.0, size=(16, 10, 6))
+    nib.save(nib.Nifti1Image(ct, np.diag([-0.7, 0.7, 2.5, 1.0])), str(path))
+    return str(path)
+
+
+@pytest.mark.filterwarnings("ignore:heuristic_trq")
+def test_batch_frame_rows_can_be_matched_to_inputs_when_one_fails(tmp_path):
+    seg = tq.load_segmentor("heuristic_trq")
+    paths = [_write_ct(tmp_path / f"case{i}.nii.gz", 20 * i) for i in range(4)]
+    paths.insert(1, str(tmp_path / "missing.nii.gz"))
+
+    batch = tq.analyze_many(paths, method="okamura", segmentor=seg, on_error="record")
+    frame = batch.to_frame()
+
+    assert list(frame["input_index"]) == [0, 2, 3, 4]
+    assert list(frame["input_source"]) == [paths[i] for i in (0, 2, 3, 4)]
+    assert list(batch.errors_to_frame()["input_index"]) == [1]
+    for _, row in frame.iterrows():
+        alone = tq.analyze(paths[row["input_index"]], method="okamura", segmentor=seg)
+        assert row["etv_ml"] == pytest.approx(alone.etv_ml)
+        assert alone.to_record()["input_index"] is None
+        assert alone.to_record()["input_source"] == paths[row["input_index"]]

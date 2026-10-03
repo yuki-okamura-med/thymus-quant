@@ -60,6 +60,7 @@ class ResultMeta:
     method: MethodName | None = None
     detail: DetailLevel = "summary"
     input_source: str | None = None
+    input_index: int | None = None
     segmentor_name: str | None = None
     segmentor_repo_id: str | None = None
     segmentor_requested_revision: str | None = None
@@ -241,6 +242,8 @@ class AnalysisResultOkamura(AnalysisResultBase):
         orientation = None if meta is None or meta.orientation is None else "".join(str(c) for c in meta.orientation)
         return {
             "study_id": self.study_id,
+            "input_index": None if meta is None else meta.input_index,
+            "input_source": None if meta is None else meta.input_source,
             "method": self.method,
             "status": self.status,
             "flags": tuple(self.flags),
