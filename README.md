@@ -247,7 +247,8 @@ Statuses are intentionally simple:
 - `not_available`: not applicable.
 
 Important flags include `invalid_member`, `all_members_invalid`,
-`used_invalid_members`, `kde_failed`, and `ensemble_qc_unavailable`.
+`used_invalid_members`, `kde_failed`, `ensemble_qc_unavailable`, and
+`ensemble_qc_not_applied`.
 
 For the Okamura method, a non-unimodal member distribution is marked invalid
 with `multimodal_or_invalid`. By default, any invalid member adds
@@ -260,6 +261,11 @@ KDE computation failure is not converted to a fake median mode. Missing spacing
 does not produce a successful result with NaN volume/ETV output. Single-member
 analysis can return quantification values, but 5-member paper ensemble criteria
 are not passed and `ensemble_qc_unavailable` is set.
+
+`OkamuraOptions(apply_qc=False)` skips the ensemble criteria (mean pairwise JS
+divergence, mean pairwise DSC, HU value variance). The three values are still
+reported in `result.qc`, but `ensemble_qc_not_applied` is set, the status is
+`check`, and `qc.paper_criteria_met` is None (not evaluated).
 
 `failed` means at least one member/mask was provided, but no computable Okamura
 value was produced. `not_available` means the method had no applicable

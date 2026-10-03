@@ -166,3 +166,26 @@ def test_failed_member_before_the_last_does_not_raise():
     assert result.qc.valid_member_count == 4
     assert result.etv_ml == pytest.approx(np.median([_alone(ct, masks[i]).etv_ml for i in computed]))
     assert result.etv_ml_members[1] is None
+
+
+def test_apply_qc_false_does_not_report_paper_criteria_met():
+    ct = _two_tissue_ct()
+    wide, thin = _box(ct.shape, 10, 30), _box(ct.shape, 12, 16)
+    seg = _nn_like_seg(ct, [wide, wide, thin, thin, thin])  # mean pairwise DSC 0.6
+    checked = tq.quantify(seg, method="okamura")
+    assert "low_dsc" in checked.flags
+    assert checked.qc.paper_criteria_met is False
+
+    unchecked = tq.quantify(seg, method="okamura", options=tq.OkamuraOptions(apply_qc=False))
+    assert unchecked.status == "check"
+    assert unchecked.qc.status == "check"
+    assert unchecked.qc.paper_criteria_met is None
+    assert "ensemble_qc_not_applied" in unchecked.flags
+    assert "low_dsc" not in unchecked.flags
+    assert unchecked.qc.mean_pairwise_dsc == pytest.approx(checked.qc.mean_pairwise_dsc)
+    assert unchecked.etv_ml == pytest.approx(checked.etv_ml)
+
+    clean = tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura", options=tq.OkamuraOptions(apply_qc=False))
+    assert clean.status == "check"
+    assert clean.qc.paper_criteria_met is None
+    assert tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura").status == "ok"

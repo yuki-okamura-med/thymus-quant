@@ -360,6 +360,11 @@ def quantify_okamura(
         flags.append("ensemble_qc_unavailable")
         qc_status = "check"
         met = None
+    elif not options.apply_qc:
+        # The ensemble criteria were not evaluated, so they cannot be reported as met.
+        flags.append("ensemble_qc_not_applied")
+        qc_status = "check"
+        met = None
     else:
         met = len(flags) == 0
         qc_status = "ok" if met else "check"
