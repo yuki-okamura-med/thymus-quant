@@ -208,11 +208,12 @@ def quantify_okamura(
         members = [SegmentationMember(member_id="single", trq_mask=segmentation.trq_mask)]
 
     member_results: list[OkamuraMemberResult] = []
-    modes: list[float] = []
-    vols: list[float] = []
-    etvs: list[float] = []
-    thymic_tissue_fractions: list[float] = []
-    atrq_below_flags: list[bool] = []
+    # One entry per member, in member order; None for members whose values could not be computed.
+    modes: list[float | None] = []
+    vols: list[float | None] = []
+    etvs: list[float | None] = []
+    thymic_tissue_fractions: list[float | None] = []
+    atrq_below_flags: list[bool | None] = []
     valid_mask: list[bool] = []
     computed_mask: list[bool] = []
     values_list: list[np.ndarray] = []
@@ -257,6 +258,8 @@ def quantify_okamura(
                     airway_mask=(m.airway_mask if detail == "full" else None),
                 )
             )
+            for values in (modes, vols, etvs, thymic_tissue_fractions, atrq_below_flags):
+                values.append(None)
             computed_mask.append(False)
             valid_mask.append(False)
             continue
@@ -401,7 +404,7 @@ def quantify_okamura(
         trq_volume_ml=trq_vol,
         etv_ml=etv,
         thymic_tissue_fraction=thymic_tissue_fraction,
-        atrq_below_aadipose_any=(any(atrq_below_flags) if atrq_below_flags else None),
+        atrq_below_aadipose_any=(any(atrq_below_flags[i] for i in computed_indices) if computed_indices else None),
         trq_hu_mode_members=tuple(modes),
         trq_volume_ml_members=tuple(vols),
         etv_ml_members=tuple(etvs),

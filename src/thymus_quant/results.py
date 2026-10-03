@@ -169,7 +169,8 @@ class AnalysisResultOkamura(AnalysisResultBase):
     """Study-level output for the Okamura method.
 
     Fields with `_members` suffix contain per-member values in the same order
-    as `members`.
+    as `members`, one entry per member. Members whose values could not be
+    computed (for example, an empty mask) have None.
 
     Notes
     -----
@@ -182,11 +183,11 @@ class AnalysisResultOkamura(AnalysisResultBase):
     etv_ml: float | None = None
     thymic_tissue_fraction: float | None = None
     atrq_below_aadipose_any: bool | None = None
-    trq_hu_mode_members: Sequence[float] = field(default_factory=tuple)
-    trq_volume_ml_members: Sequence[float] = field(default_factory=tuple)
-    etv_ml_members: Sequence[float] = field(default_factory=tuple)
-    thymic_tissue_fraction_members: Sequence[float] = field(default_factory=tuple)
-    atrq_below_aadipose_members: Sequence[bool] = field(default_factory=tuple)
+    trq_hu_mode_members: Sequence[float | None] = field(default_factory=tuple)
+    trq_volume_ml_members: Sequence[float | None] = field(default_factory=tuple)
+    etv_ml_members: Sequence[float | None] = field(default_factory=tuple)
+    thymic_tissue_fraction_members: Sequence[float | None] = field(default_factory=tuple)
+    atrq_below_aadipose_members: Sequence[bool | None] = field(default_factory=tuple)
     qc: OkamuraQC | None = None
     members: Sequence[OkamuraMemberResult] = field(default_factory=tuple)
 

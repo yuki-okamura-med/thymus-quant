@@ -231,7 +231,9 @@ back to `heuristic_trq`.
 - `etv_ml`: summary ETV in mL.
 - `trq_volume_ml`: summary TRQ volume in mL.
 
-Okamura member fields are per-member values. Summary fields are ensemble
+Okamura member fields are per-member values. The `*_members` tuples have one
+entry per member, in the order of `members`; a member whose values could not be
+computed (for example, an empty mask) has None. Summary fields are ensemble
 aggregates. QC-invalid members can still retain numeric values; check
 `result.status`, `result.flags`, and `result.qc.flags` before using them.
 
