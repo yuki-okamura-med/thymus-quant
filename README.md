@@ -81,7 +81,14 @@ available CUDA device, and otherwise falls back to CPU.
 When weights are loaded from Hugging Face, branch/tag/default revisions are
 resolved to the underlying commit SHA before download and recorded in result
 metadata. When all selected weights are loaded from a local git mirror, the local
-mirror's HEAD commit is recorded instead. The result metadata distinguishes
+mirror's HEAD commit is recorded instead.
+
+A local mirror (`THYQ_TRQSEG_V1_LOCAL_REPO`) is used when no `revision` is given,
+or when `revision` is the full commit SHA of the mirror's HEAD. If `revision` is
+anything else (another commit, a branch or tag name, or a short SHA), or the
+mirror's HEAD cannot be read, the mirror is not used: a WARNING is logged by the
+`thymus_quant.api` logger and the requested revision is loaded from Hugging Face
+(or its cache). The result metadata distinguishes
 requested and resolved revision and records the weight source (`local`,
 `downloaded`, `mixed`, or `none`).
 

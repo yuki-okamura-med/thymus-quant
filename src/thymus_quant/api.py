@@ -7,6 +7,7 @@ Design intent:
 - method-specific quantification logic lives under `thymus_quant.quantification`.
 """
 
+import logging
 import os
 import subprocess
 import threading
@@ -30,6 +31,8 @@ from .results import (
 )
 from .segmentors import ImageInput, LoadedSegmentor, SegmentationResult, SegmentorInfo, SegmentorMember
 
+
+logger = logging.getLogger(__name__)
 
 _SEGMENTOR_CACHE: dict[tuple, LoadedSegmentor] = {}
 _SEGMENTOR_CACHE_LOCK = threading.Lock()
@@ -150,6 +153,15 @@ def _resolve_local_git_revision(repo_path: str | None) -> str | None:
     return revision or None
 
 
+def _same_commit(revision: str, local_revision: str | None) -> bool:
+    """True when `revision` is the full commit SHA of the local mirror HEAD.
+
+    Branch or tag names and short SHAs are not treated as a match, because the
+    local mirror cannot tell which commit they name on the Hub.
+    """
+    return local_revision is not None and revision.strip().lower() == local_revision.strip().lower()
+
+
 def _segmentor_cache_key(
     info: SegmentorInfo,
     requested_members: tuple[str, ...],
@@ -219,6 +231,17 @@ def load_segmentor(
 
     local_repo = _find_local_trqseg_v1_repo() if info.repo_id == "yuki-okamura-hf/TRQseg-v1" else None
     local_revision = _resolve_local_git_revision(local_repo)
+    if local_repo is not None and revision is not None and not _same_commit(revision, local_revision):
+        # A pinned revision must not be served by a mirror at another (or an unknown) commit.
+        logger.warning(
+            "Local TRQseg-v1 mirror %s is at %s, not at the requested revision %s; it is not used, and the "
+            "requested revision is loaded from Hugging Face instead.",
+            local_repo,
+            local_revision or "an unknown commit",
+            revision,
+        )
+        local_repo = None
+        local_revision = None
 
     resolved_members = []
     for m in requested:

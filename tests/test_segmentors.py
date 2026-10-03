@@ -63,10 +63,70 @@ def test_local_weight_provenance_from_env(tmp_path, monkeypatch):
     weight.parent.mkdir(parents=True)
     weight.write_bytes(b"fake")
     monkeypatch.setenv("THYQ_TRQSEG_V1_LOCAL_REPO", str(tmp_path))
-    seg = tq.load_segmentor("trqseg_v1", members=[0], revision="rev-local", local_files_only=True)
+    seg = tq.load_segmentor("trqseg_v1", members=[0], local_files_only=True)
     assert seg.members[0].local_path == str(weight)
     assert seg.info.local_source == str(tmp_path)
     assert seg.info.weight_source == "local"
+
+
+def test_pinned_revision_does_not_use_mirror_without_git_head(tmp_path, monkeypatch):
+    weight = tmp_path / "weights" / "fold-0" / "model.safetensors"
+    weight.parent.mkdir(parents=True)
+    weight.write_bytes(b"fake")
+    monkeypatch.setenv("THYQ_TRQSEG_V1_LOCAL_REPO", str(tmp_path))
+    seg = tq.load_segmentor("trqseg_v1", members=[0], revision="rev-local", local_files_only=True)
+    assert seg.members[0].local_path is None
+    assert seg.info.local_source is None
+    assert seg.info.resolved_revision == "rev-local"
+
+
+def _git_mirror(tmp_path):
+    weight = tmp_path / "weights" / "fold-0" / "model.safetensors"
+    weight.parent.mkdir(parents=True)
+    weight.write_bytes(b"fake")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "add", "weights/fold-0/model.safetensors"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-m", "add weight"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+    return weight, head
+
+
+def test_pinned_revision_uses_local_mirror_only_at_that_commit(tmp_path, monkeypatch, caplog):
+    weight, head = _git_mirror(tmp_path)
+    monkeypatch.setenv("THYQ_TRQSEG_V1_LOCAL_REPO", str(tmp_path))
+
+    for same in (head, head.upper()):
+        seg = tq.load_segmentor("trqseg_v1", members=[0], revision=same, cache_dir=tmp_path / "c1", local_files_only=True)
+        assert seg.members[0].local_path == str(weight)
+        assert seg.info.local_source == str(tmp_path)
+        assert seg.info.resolved_revision == head
+
+    calls = {}
+
+    def fake_hf_hub_download(**kwargs):
+        calls["download"] = kwargs
+        return str(weight)
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=None, hf_hub_download=fake_hf_hub_download))
+    for other in ("b" * 40, "main", head[:7]):
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="thymus_quant.api"):
+            seg = tq.load_segmentor("trqseg_v1", members=[0], revision=other, cache_dir=tmp_path / "c2", local_files_only=True)
+        assert seg.members[0].local_path is None
+        assert seg.info.local_source is None
+        assert seg.info.weight_source == "unknown"
+        assert seg.info.resolved_revision == other
+        assert "not at the requested revision" in caplog.text
+
+        calls.clear()
+        seg._resolve_weight_path(seg.members[0])
+        assert calls["download"]["revision"] == other
+        assert seg.members[0].weight_source == "downloaded"
 
 
 def test_local_git_mirror_revision_is_recorded(tmp_path, monkeypatch):
