@@ -373,6 +373,8 @@ def quantify_okamura(
         qc_status = "check" if qc_status != "failed" else qc_status
 
     # Informational only: does not change flags, QC status or paper_criteria_met.
+    if segmentation.image is not None:
+        warnings_out.extend(segmentation.image.warnings)
     prep = segmentation.preprocessing or {}
     if prep.get("inplane_is_512") is False:
         shape = prep.get("inplane_shape") or ["?", "?"]

@@ -206,6 +206,7 @@ def test_to_record_orientation_columns_for_las_and_array_inputs(fake_segmentor):
 
 def test_external_mask_results_have_no_model_preprocessing():
     ct = np.full((5, 5, 5), -20.0)
+    ct[0, 0, :] = -1000.0  # air, so the values look like HU
     mask = np.zeros_like(ct, dtype=bool)
     mask[1:4, 1:4, 1:4] = True
     seg = tq.SegmentationResult.from_mask(trq_mask=mask, ct_hu=ct, spacing_mm=(1, 1, 1))

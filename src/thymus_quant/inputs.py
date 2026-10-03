@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Input loading and validation for CT images, masks, and geometry."""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,13 +12,27 @@ import numpy as np
 
 from .exceptions import InputValidationError, MissingGeometryError
 
+logger = logging.getLogger(__name__)
+
+# A chest CT in HU contains air and lung, so at least 1% of its voxels are far
+# below -500 HU. When the 1st percentile is higher, the values are probably not
+# HU (for example, the rescale intercept of -1024 was not applied, or the image
+# was windowed or normalized).
+HU_CHECK_PERCENTILE = 1.0
+HU_CHECK_MAX_LOW_HU = -500.0
+# Relative difference allowed between the voxel volume from spacing_mm (header
+# voxel sizes) and the voxel volume of the affine before a warning is given.
+VOXEL_VOLUME_REL_TOL = 1e-3
+
 
 @dataclass(slots=True)
 class ImageContext:
     """Study-level CT image context shared by segmentation members.
 
     `ct_hu` is a 3D CT array in Hounsfield units. `spacing_mm` is `(sx, sy, sz)`
-    in millimeters on the same grid as the masks.
+    in millimeters on the same grid as the masks. `warnings` holds notes about
+    the input (values that do not look like HU, voxel sizes that disagree with
+    the affine); they are copied to the analysis result and do not change it.
     """
 
     ct_hu: Any
@@ -26,6 +41,8 @@ class ImageContext:
     source: str | None = None
     orientation: tuple[str, str, str] | None = None
     geometry: dict[str, Any] | None = None
+    intensity: dict[str, Any] | None = None
+    warnings: tuple[str, ...] = ()
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -55,6 +72,11 @@ def geometry_report(
     - ``voxel_sizes_affine_mm``: column norms of the affine.
     - ``voxel_size_mismatch_max_mm``: largest difference between ``spacing_mm``
       (header zooms) and the affine column norms.
+    - ``voxel_volume_affine_mm3`` and ``voxel_volume_mismatch_rel``: voxel volume
+      of the affine (``|det|``) and its relative difference from the product of
+      ``spacing_mm``, which is used for volumes. Shear (gantry tilt) and
+      rotation do not change the voxel volume, so they do not count as a
+      mismatch here.
     - ``obliquity_max_deg``: largest angle between a voxel axis and the nearest
       world axis (``nibabel.affines.obliquity``).
     - ``shear_max``: largest off-diagonal term of the direction-cosine Gram
@@ -82,6 +104,10 @@ def geometry_report(
         if spacing_mm is not None:
             zooms = np.asarray(spacing_mm, dtype=float)[:3]
             report["voxel_size_mismatch_max_mm"] = float(np.max(np.abs(zooms - sizes)))
+            vol_affine = float(abs(np.linalg.det(rzs)))
+            report["voxel_volume_affine_mm3"] = vol_affine
+            if vol_affine > 0:
+                report["voxel_volume_mismatch_rel"] = float(abs(float(np.prod(zooms)) - vol_affine) / vol_affine)
         if image is not None and hasattr(image, "get_qform") and hasattr(image, "get_sform"):
             qform, qcode = image.get_qform(coded=True)
             sform, scode = image.get_sform(coded=True)
@@ -92,6 +118,60 @@ def geometry_report(
         return report
     except Exception:
         return {"valid_affine": False}
+
+
+def intensity_report(ct_hu: Any) -> dict[str, Any] | None:
+    """Summarize CT values to find inputs that are probably not in HU.
+
+    Percentiles are taken on every 4th voxel in-plane and every 2nd slice.
+    ``looks_like_hu`` is False when the 1st percentile is above -500 HU.
+    Nothing here changes the image.
+    """
+    ct = np.asarray(ct_hu)
+    if ct.ndim != 3 or ct.size == 0:
+        return None
+    sample = ct[::4, ::4, ::2]
+    vals = sample[np.isfinite(sample)]
+    if vals.size == 0:
+        vals = ct[np.isfinite(ct)]
+    if vals.size == 0:
+        return None
+    p_low, p50, p99 = (float(v) for v in np.percentile(vals, [HU_CHECK_PERCENTILE, 50.0, 99.0]))
+    return {
+        "hu_p01": p_low,
+        "hu_p50": p50,
+        "hu_p99": p99,
+        "looks_like_hu": bool(p_low <= HU_CHECK_MAX_LOW_HU),
+    }
+
+
+def input_warnings(
+    *,
+    spacing_mm: tuple[float, float, float],
+    geometry: dict[str, Any] | None,
+    intensity: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    """Notes about an input that may make the results wrong (results are not changed)."""
+    notes: list[str] = []
+    if intensity is not None and intensity.get("looks_like_hu") is False:
+        notes.append(
+            f"CT values do not look like HU: the 1st percentile is {intensity['hu_p01']:.0f} "
+            f"(median {intensity['hu_p50']:.0f}), but a chest CT in HU has air and lung below "
+            f"{HU_CHECK_MAX_LOW_HU:.0f} HU. Check that the rescale slope/intercept were applied and "
+            "that the image was not windowed, normalized or cropped. Results may be wrong."
+        )
+    rel = None if geometry is None else geometry.get("voxel_volume_mismatch_rel")
+    if rel is not None and rel > VOXEL_VOLUME_REL_TOL:
+        sizes = ", ".join(f"{v:.4g}" for v in spacing_mm)
+        affine_sizes = ", ".join(f"{v:.4g}" for v in geometry.get("voxel_sizes_affine_mm", []))
+        notes.append(
+            f"Voxel sizes ({sizes} mm, from the header) disagree with the affine (column norms {affine_sizes} mm): "
+            f"the voxel volumes differ by {100.0 * rel:.2f}%. Volumes and ETV use the header voxel sizes; "
+            "check how the file was written."
+        )
+    for note in notes:
+        logger.warning(note)
+    return tuple(notes)
 
 
 def validate_spacing(spacing_mm: tuple[float, float, float] | list[float] | np.ndarray | None) -> tuple[float, float, float]:
@@ -133,13 +213,17 @@ def load_image_context(image: Any, *, source: str | None = None) -> ImageContext
 
     ct = validate_ct_hu(np.asarray(img.get_fdata(), dtype=np.float32))
     spacing = validate_spacing(img.header.get_zooms()[:3])
+    geometry = geometry_report(img.affine, spacing_mm=spacing, image=img)
+    intensity = intensity_report(ct)
     return ImageContext(
         ct_hu=ct,
         spacing_mm=spacing,
         affine=np.asarray(img.affine),
         source=src,
         orientation=_orientation_from_affine(img.affine),
-        geometry=geometry_report(img.affine, spacing_mm=spacing, image=img),
+        geometry=geometry,
+        intensity=intensity,
+        warnings=input_warnings(spacing_mm=spacing, geometry=geometry, intensity=intensity),
     )
 
 
@@ -155,13 +239,17 @@ def make_image_context(
     ct = validate_ct_hu(ct_hu)
     spacing = validate_spacing(spacing_mm)
     orient = orientation if orientation is not None else _orientation_from_affine(affine)
+    geometry = geometry_report(affine, spacing_mm=spacing)
+    intensity = intensity_report(ct)
     return ImageContext(
         ct_hu=ct,
         spacing_mm=spacing,
         affine=affine,
         source=source,
         orientation=orient,
-        geometry=geometry_report(affine, spacing_mm=spacing),
+        geometry=geometry,
+        intensity=intensity,
+        warnings=input_warnings(spacing_mm=spacing, geometry=geometry, intensity=intensity),
     )
 
 

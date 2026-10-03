@@ -138,14 +138,28 @@ spatial images. Existing masks can be supplied with NumPy-compatible arrays via
 
 Data contract:
 
-- CT values must be HU.
+- CT values must be HU. A chest CT in HU contains air and lung, so when the 1st
+  percentile of the CT values is above -500 HU, the values are probably not HU
+  (for example, the rescale intercept of -1024 was not applied, or the image
+  was windowed or normalized). Such inputs are not rejected: a WARNING is
+  logged by the `thymus_quant.inputs` logger and a note is added to
+  `result.warnings`. The values checked are recorded in `ImageContext.intensity`
+  and the result metadata (`hu_p01`, `hu_p50`, `hu_p99`, `looks_like_hu`).
 - CT arrays must be 3D.
 - Masks must be 3D bool or binary 0/1 arrays.
 - CT and mask shapes must match exactly.
 - `spacing_mm` is 3 positive finite values in millimeters.
-- `spacing_mm` is normalized to Python floats and used for voxel-volume
-  calculation. It is not changed; its difference from the affine column norms
-  is recorded in the geometry report (see below).
+- `spacing_mm` (for NIfTI files, the header voxel sizes) is normalized to Python
+  floats and used for voxel-volume calculation. It is not changed. When an
+  affine is available and the voxel volume from `spacing_mm` differs from the
+  voxel volume of the affine (`|det|`) by more than 0.1%, a WARNING is logged by
+  the `thymus_quant.inputs` logger and a note is added to `result.warnings`;
+  volumes and ETV still use `spacing_mm`. Shear (gantry tilt) and rotation do
+  not change the voxel volume and are not warned about. See the geometry report
+  below.
+- The input notes above do not change values, `flags`, `qc.status` or
+  `qc.paper_criteria_met`. `result.warnings` is also in the `warnings` column of
+  `to_record()` / `to_frame()`.
 - External CT/mask inputs are not resampled, cropped, padded, flipped, or
   permuted. Shape mismatches raise `InputValidationError` instead of being
   repaired automatically.
@@ -183,9 +197,11 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
   `thymus_quant.segmentors` logger.
 - `geometry` (in `ImageContext`, `SegmentationResult.to_dict()["image"]` and the
   result metadata) records `voxel_sizes_affine_mm`, `voxel_size_mismatch_max_mm`,
-  `obliquity_max_deg`, `shear_max`, and, for NIfTI images, `qform_code`,
-  `sform_code` and `qform_sform_max_abs_diff`. These values are reported only;
-  no thresholds are applied.
+  `voxel_volume_affine_mm3`, `voxel_volume_mismatch_rel`, `obliquity_max_deg`,
+  `shear_max`, and, for NIfTI images, `qform_code`, `sform_code` and
+  `qform_sform_max_abs_diff`. These values are reported only; the only
+  threshold applied is the 0.1% voxel-volume difference that gives a warning
+  (see Data contract).
 - The heuristic segmentor (`heuristic_trq`, debug only) is not affected.
 
 ### In-plane size

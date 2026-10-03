@@ -567,6 +567,8 @@ class SegmentationResult:
                 "orientation": None if self.image.orientation is None else list(self.image.orientation),
                 "source": self.image.source,
                 "geometry": self.image.geometry,
+                "intensity": self.image.intensity,
+                "warnings": list(self.image.warnings),
             },
             "preprocessing": self.preprocessing,
             "merge_strategy": self.merge_strategy,

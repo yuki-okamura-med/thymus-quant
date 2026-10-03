@@ -79,6 +79,7 @@ class ResultMeta:
     orientation_status: str | None = None
     reoriented_for_model: bool | None = None
     geometry: dict[str, Any] | None = None
+    intensity: dict[str, Any] | None = None
     inplane_shape: tuple[int, int] | None = None
     inplane_is_512: bool | None = None
     network_pixel_mm: tuple[float, float] | None = None
@@ -243,6 +244,7 @@ class AnalysisResultOkamura(AnalysisResultBase):
             "method": self.method,
             "status": self.status,
             "flags": tuple(self.flags),
+            "warnings": tuple(self.warnings),
             "failure_reason": self.failure_reason,
             "trq_hu_mode": self.trq_hu_mode,
             "trq_volume_ml": self.trq_volume_ml,
