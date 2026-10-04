@@ -71,6 +71,7 @@ def test_batch_frame_rows_can_be_matched_to_inputs_when_one_fails(tmp_path):
     assert list(frame["input_index"]) == [0, 2, 3, 4]
     assert list(frame["input_source"]) == [paths[i] for i in (0, 2, 3, 4)]
     assert list(batch.errors_to_frame()["input_index"]) == [1]
+    assert sorted(set(batch.members_to_frame()["input_index"])) == [0, 2, 3, 4]
     for _, row in frame.iterrows():
         alone = tq.analyze(paths[row["input_index"]], method="okamura", segmentor=seg)
         assert row["etv_ml"] == pytest.approx(alone.etv_ml)

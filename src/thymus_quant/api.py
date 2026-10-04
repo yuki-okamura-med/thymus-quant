@@ -264,9 +264,12 @@ def load_segmentor(
     sources = {m.weight_source for m in resolved_members}
     weight_source = "mixed" if len(sources) > 1 else (next(iter(sources)) if sources else "none")
     all_weights_local = bool(resolved_members) and all(m.local_path is not None for m in resolved_members)
-    resolved_revision = local_revision if (all_weights_local and local_revision is not None) else revision
+    # The mirror's HEAD is recorded as local_revision, not as a resolved Hugging Face revision:
+    # the mirror can have its own history (a commit that does not exist on the Hub).
+    resolved_revision = revision
     for m in resolved_members:
-        m.resolved_revision = resolved_revision
+        m.resolved_revision = None if m.local_path else revision
+    any_local = any(m.local_path for m in resolved_members)
     info = SegmentorInfo(
         name=info.name,
         repo_id=info.repo_id,
@@ -277,8 +280,9 @@ def load_segmentor(
         available_members=info.available_members,
         selected_members=requested,
         cache_dir=None if cache_dir is None else str(cache_dir),
-        weight_source=weight_source,  # may become downloaded after lazy load
-        local_source=local_repo,
+        weight_source=weight_source,  # updated when the weights are loaded
+        local_source=local_repo if any_local else None,
+        local_revision=local_revision if any_local else None,
         preprocessing_version=info.preprocessing_version,
     )
 
@@ -336,6 +340,8 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
         segmentor_members=() if sinfo is None else tuple(sinfo.selected_members),
         segmentor_weight_source=None if sinfo is None else sinfo.weight_source,
         segmentor_local_source=None if sinfo is None else sinfo.local_source,
+        segmentor_local_revision=None if sinfo is None else sinfo.local_revision,
+        segmentor_weight_sha256=() if sinfo is None else tuple(sinfo.weight_sha256),
         preprocessing_version=None if sinfo is None else sinfo.preprocessing_version,
         image_shape=None if segmentation.image is None else tuple(segmentation.image.shape),
         spacing_mm=None if segmentation.image is None else tuple(segmentation.image.spacing_mm),

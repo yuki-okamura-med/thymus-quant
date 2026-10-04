@@ -104,7 +104,8 @@ def test_pinned_revision_uses_local_mirror_only_at_that_commit(tmp_path, monkeyp
         seg = tq.load_segmentor("trqseg_v1", members=[0], revision=same, cache_dir=tmp_path / "c1", local_files_only=True)
         assert seg.members[0].local_path == str(weight)
         assert seg.info.local_source == str(tmp_path)
-        assert seg.info.resolved_revision == head
+        assert seg.info.local_revision == head
+        assert seg.info.resolved_revision == same
 
     calls = {}
 
@@ -152,8 +153,10 @@ def test_local_git_mirror_revision_is_recorded(tmp_path, monkeypatch):
     monkeypatch.setenv("THYQ_TRQSEG_V1_LOCAL_REPO", str(tmp_path))
     seg = tq.load_segmentor("trqseg_v1", members=[0], cache_dir=tmp_path / "cache", local_files_only=True)
 
-    assert seg.info.resolved_revision == expected
-    assert seg.members[0].resolved_revision == expected
+    # The mirror's HEAD is recorded as the local revision, not as a Hugging Face revision.
+    assert seg.info.local_revision == expected
+    assert seg.info.resolved_revision is None
+    assert seg.members[0].resolved_revision is None
 
 
 def test_heuristic_is_explicit_and_warns(tmp_path):
@@ -172,3 +175,26 @@ def test_model_load_failure_does_not_fallback(monkeypatch):
     img = make_image_context(ct_hu=np.zeros((4, 4, 4)), spacing_mm=(1, 1, 1))
     with pytest.raises(RuntimeError, match="heuristic fallback is disabled"):
         seg.segment_trq(img, study_id="s")
+
+
+def test_weight_checksums_and_source_are_recorded_when_loaded(tmp_path, monkeypatch):
+    import hashlib
+
+    weight = tmp_path / "weights" / "fold-0" / "model.safetensors"
+    weight.parent.mkdir(parents=True)
+    weight.write_bytes(b"fake weights")
+    monkeypatch.setenv("THYQ_TRQSEG_V1_LOCAL_REPO", str(tmp_path))
+    seg = tq.load_segmentor("trqseg_v1", members=[0], cache_dir=tmp_path / "c", local_files_only=True)
+    seg._resolve_weight_path(seg.members[0])
+    seg._record_weight_provenance(seg.members)
+    assert seg.info.weight_sha256 == (hashlib.sha256(b"fake weights").hexdigest(),)
+    assert seg.info.weight_source == "local"
+
+    downloaded = tmp_path / "dl.safetensors"
+    downloaded.write_bytes(b"other")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(HfApi=None, hf_hub_download=lambda **kw: str(downloaded)))
+    seg2 = tq.load_segmentor("trqseg_v1", members=[1], revision="c" * 40, cache_dir=tmp_path / "c2", local_files_only=True)
+    seg2._resolve_weight_path(seg2.members[0])
+    seg2._record_weight_provenance(seg2.members)
+    assert seg2.info.weight_source == "downloaded"
+    assert seg2.info.weight_sha256 == (hashlib.sha256(b"other").hexdigest(),)

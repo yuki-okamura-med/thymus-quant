@@ -68,6 +68,8 @@ class ResultMeta:
     segmentor_members: tuple[str, ...] = ()
     segmentor_weight_source: str | None = None
     segmentor_local_source: str | None = None
+    segmentor_local_revision: str | None = None
+    segmentor_weight_sha256: tuple[str | None, ...] = ()
     preprocessing_version: str | None = None
     image_shape: tuple[int, int, int] | None = None
     spacing_mm: tuple[float, float, float] | None = None
@@ -322,6 +324,7 @@ class BatchAnalysisResultOkamura(BatchAnalysisResultBase):
                 rows.append(
                     {
                         "study_id": r.study_id,
+                        "input_index": None if r.meta is None else r.meta.input_index,
                         "member_id": m.member_id,
                         "valid": m.valid,
                         "trq_hu_mode": m.trq_hu_mode,
