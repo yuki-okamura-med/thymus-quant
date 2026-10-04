@@ -14,6 +14,19 @@ those images again with 0.1.0a4 or later. You can check the voxel order of a fil
 with `nibabel.aff2axcodes(nibabel.load(path).affine)`; see
 [Voxel order (orientation)](#voxel-order-orientation) for details.
 
+From version 0.1.0a5, the QC values and A_TRQ are computed as in the paper's
+analysis code. In particular, the Jensen-Shannon value is now the JS distance
+that the paper's threshold of 0.1 refers to; earlier versions computed a much
+smaller quantity, so their JS criterion was in practice never triggered. See
+[How the Okamura values are computed](#how-the-okamura-values-are-computed-method-version-okamura_v2).
+
+Intended input: TRQseg-v1 and the QC thresholds were developed on non-contrast
+axial chest CT reconstructed with a soft-tissue (standard) kernel, 512 x 512
+pixels and 1-3 mm slices (the inclusion criteria of the paper). Other CT
+(contrast-enhanced, lung or sharp kernels, thicker slices, PET/CT or radiotherapy
+planning CT) is processed, but results have not been validated; contrast
+enhancement raises A_TRQ and therefore ETV.
+
 Main readouts:
 
 - $A_{TRQ}$: representative HU value of the thymic region of quantification.
@@ -37,7 +50,8 @@ pip install thymus-quant
 ```
 
 This installs the dependencies needed for both quantification and TRQseg-v1
-segmentation.
+segmentation (NumPy, SciPy, nibabel, pandas, PyTorch, torchvision, safetensors
+and huggingface_hub).
 
 Model weights are loaded through the Hugging Face cache unless `local_files_only`
 or an explicit local mirror is configured. A local TRQseg-v1 mirror may be set
