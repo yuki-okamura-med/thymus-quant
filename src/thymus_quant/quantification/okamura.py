@@ -286,7 +286,14 @@ def quantify_okamura(
                 raise InputValidationError(f"member {m.member_id} TRQ has {n_voxels} voxel(s); at least {MIN_MEMBER_VOXELS} are needed")
             # Index first, then cast: avoids a float64 copy of the whole CT volume per member.
             vals = np.asarray(ct)[mask].astype(float)
-            vals = vals[np.isfinite(vals)]
+            n_nonfinite = int(np.count_nonzero(~np.isfinite(vals)))
+            if n_nonfinite:
+                # Not computed rather than measured on the finite part: the volume would still count
+                # the missing voxels, and the paper's KDE cannot be fitted with them.
+                member_flags.append("nonfinite_hu")
+                raise InputValidationError(
+                    f"member {m.member_id} TRQ has {n_nonfinite} of {n_voxels} voxels with non-finite CT values"
+                )
             kde = _kde_mode_and_second_ratio(vals)
             vol = voxvol_ml(mask, img, spacing_mm=spacing)
             computed = True

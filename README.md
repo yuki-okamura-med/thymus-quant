@@ -170,7 +170,11 @@ Data contract:
 - External CT/mask inputs are not resampled, cropped, padded, flipped, or
   permuted. Shape mismatches raise `InputValidationError` instead of being
   repaired automatically.
-- Masked CT voxels must contain at least one finite HU value.
+- Masked CT voxels must contain at least one finite HU value. In quantification, a
+  member whose TRQ contains any non-finite CT value (NaN/inf) is not computed
+  (`computation_failed`, `nonfinite_hu`): measuring only the finite part would still
+  count the missing voxels in the volume. Non-finite CT values anywhere in the image
+  are also reported in `result.warnings` (`ImageContext.intensity["n_nonfinite"]`).
 - DICOM directories are not directly supported by the public API.
 - Current TRQseg-v1 preprocessing records input/output shapes and returns masks
   on the input grid. Inputs outside the reference preprocessing domain should be

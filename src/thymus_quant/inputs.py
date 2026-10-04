@@ -125,6 +125,7 @@ def intensity_report(ct_hu: Any) -> dict[str, Any] | None:
 
     Percentiles are taken on every 4th voxel in-plane and every 2nd slice.
     ``looks_like_hu`` is False when the 1st percentile is above -500 HU.
+    ``n_nonfinite`` counts NaN/inf values in the whole volume.
     Nothing here changes the image.
     """
     ct = np.asarray(ct_hu)
@@ -142,6 +143,7 @@ def intensity_report(ct_hu: Any) -> dict[str, Any] | None:
         "hu_p50": p50,
         "hu_p99": p99,
         "looks_like_hu": bool(p_low <= HU_CHECK_MAX_LOW_HU),
+        "n_nonfinite": int(np.count_nonzero(~np.isfinite(ct))),
     }
 
 
@@ -159,6 +161,11 @@ def input_warnings(
             f"(median {intensity['hu_p50']:.0f}), but a chest CT in HU has air and lung below "
             f"{HU_CHECK_MAX_LOW_HU:.0f} HU. Check that the rescale slope/intercept were applied and "
             "that the image was not windowed, normalized or cropped. Results may be wrong."
+        )
+    if intensity is not None and intensity.get("n_nonfinite"):
+        notes.append(
+            f"CT has {intensity['n_nonfinite']} non-finite values (NaN/inf). They are passed to the segmentation "
+            "network as they are, and a member whose TRQ contains any of them is not computed."
         )
     rel = None if geometry is None else geometry.get("voxel_volume_mismatch_rel")
     if rel is not None and rel > VOXEL_VOLUME_REL_TOL:

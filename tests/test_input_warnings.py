@@ -123,3 +123,12 @@ def test_array_inputs_without_affine_get_no_geometry_warning():
     seg, res = _quantify(_chest_like_ct(), affine=None)
     assert seg.image.geometry is None
     assert not res.warnings
+
+
+def test_nonfinite_ct_values_are_warned():
+    ct = _chest_like_ct()
+    ct[0, 0, :3] = np.nan
+    seg, res = _quantify(ct)
+    assert seg.image.intensity["n_nonfinite"] == 3
+    assert any("3 non-finite values" in w for w in res.warnings)
+    assert _quantify(_chest_like_ct())[0].image.intensity["n_nonfinite"] == 0

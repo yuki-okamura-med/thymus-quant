@@ -190,3 +190,25 @@ def test_apply_qc_false_does_not_report_paper_criteria_met():
     assert clean.status == "check"
     assert clean.qc.paper_criteria_met is None
     assert tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura").status == "ok"
+
+
+def test_member_with_nonfinite_hu_in_trq_is_not_computed():
+    ct = _two_tissue_ct()
+    wide = _box(ct.shape, 12, 28)
+    holed = ct.copy()
+    holed[20, 15, 8] = np.nan  # inside every member's TRQ
+    seg = _nn_like_seg(holed, [wide] * 5)
+    res = tq.quantify(seg, method="okamura", detail="full")
+    assert res.status == "failed"
+    assert all("nonfinite_hu" in m.flags and "computation_failed" in m.flags for m in res.members)
+    assert res.etv_ml is None and res.trq_volume_ml is None
+
+    # Missing values only in one member's TRQ: that member fails, the others are summarized.
+    other = _box(ct.shape, 13, 29)
+    holed2 = ct.copy()
+    holed2[20, 28, 8] = np.inf  # inside `other` only
+    res2 = tq.quantify(_nn_like_seg(holed2, [wide, other, wide, wide, wide]), method="okamura", detail="full")
+    assert "nonfinite_hu" in res2.members[1].flags
+    assert res2.etv_ml_members[1] is None
+    assert res2.etv_ml == pytest.approx(_alone(ct, wide).etv_ml)
+    assert res2.status == "check"
