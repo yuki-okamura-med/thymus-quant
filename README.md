@@ -327,6 +327,20 @@ does not produce a successful result with NaN volume/ETV output. Single-member
 analysis can return quantification values, but 5-member paper ensemble criteria
 are not passed and `ensemble_qc_unavailable` is set.
 
+`qc.paper_criteria_met` is True or False only for the paper's protocol: five
+members (the TRQseg-v1 folds fold-0 to fold-4, or five supplied member masks)
+quantified with the default `OkamuraOptions`. For other ensembles (for example
+`members=[0, 1]`) or other options, the status still follows the configured
+criteria, but `paper_criteria_met` is None and `result.warnings` says why.
+
+`OkamuraOptions` rejects values that cannot give a valid result: every number
+must be finite, `athymic_hu` must be greater than `aadipose_hu`, and
+`delta_hu_margin` must be at least 0 and smaller than their difference.
+
+When a member's `A_TRQ` is above `athymic_hu` (+80 HU), its thymic tissue
+fraction is capped at 1 and a note is added to `result.warnings`. The method is
+for non-contrast chest CT; values this high suggest contrast enhancement.
+
 `OkamuraOptions(apply_qc=False)` skips the ensemble criteria (mean pairwise JS
 divergence, mean pairwise DSC, HU value variance). The three values are still
 reported in `result.qc`, but `ensemble_qc_not_applied` is set, the status is

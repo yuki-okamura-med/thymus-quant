@@ -49,15 +49,16 @@ def test_kde_exception_is_not_median_mode(monkeypatch):
 
 
 def test_valid_and_invalid_member_mixture_uses_valid_summary():
-    ct1 = np.full((6, 6, 6), -15.0)
-    ct2 = ct1.copy()
-    ct2[1:-1, 1:-1, 1:-1] = np.tile(np.array([-100.0, 50.0]), 32).reshape(4, 4, 4)
-    masks = [_mask(), _mask()]
-    seg = _seg(ct2, masks=masks)
-    result = tq.quantify(seg, method="okamura", options=tq.OkamuraOptions(second_peak_ratio_threshold=-1.0))
+    # Four unimodal members and one that spans fat and soft tissue (multimodal), default options.
+    ct = _two_tissue_ct()
+    masks = [_box(ct.shape, 12, 28), _box(ct.shape, 13, 29), _box(ct.shape, 14, 28), _box(ct.shape, 12, 27), _box(ct.shape, 18, 42)]
+    result = tq.quantify(_nn_like_seg(ct, masks), method="okamura", detail="full")
+    assert [m.valid for m in result.members] == [True, True, True, True, False]
     assert result.status == "check"
     assert "invalid_member" in result.flags
+    assert "excluded_invalid_members" in result.flags
     assert result.qc.paper_criteria_met is False
+    assert result.etv_ml == pytest.approx(np.median([_alone(ct, masks[i]).etv_ml for i in range(4)]))
 
 
 def test_all_members_qc_invalid_but_computable_returns_check_with_flags():
@@ -71,7 +72,7 @@ def test_all_members_qc_invalid_but_computable_returns_check_with_flags():
     assert result.status == "check"
     assert "all_members_invalid" in result.flags
     assert "used_invalid_members" in result.flags
-    assert result.qc.paper_criteria_met is False
+    assert result.qc.paper_criteria_met is None  # 2 members and custom options: not the paper's protocol
 
 
 def test_all_members_computation_failed_returns_failed(monkeypatch):
@@ -212,3 +213,45 @@ def test_member_with_nonfinite_hu_in_trq_is_not_computed():
     assert res2.etv_ml_members[1] is None
     assert res2.etv_ml == pytest.approx(_alone(ct, wide).etv_ml)
     assert res2.status == "check"
+
+
+def test_paper_criteria_only_for_the_five_member_protocol_with_default_options():
+    ct = _two_tissue_ct()
+    wide = _box(ct.shape, 12, 28)
+    five = tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura")
+    assert five.status == "ok" and five.qc.paper_criteria_met is True
+    two = tq.quantify(_nn_like_seg(ct, [wide] * 2), method="okamura")
+    assert two.status == "ok" and two.qc.paper_criteria_met is None
+    assert any("paper_criteria_met is None" in w for w in two.warnings)
+    custom = tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura", options=tq.OkamuraOptions(pairwise_dsc_threshold=0.5))
+    assert custom.qc.paper_criteria_met is None
+    seg = _nn_like_seg(ct, [wide] * 5)
+    seg.segmentor = tq.SegmentorInfo(name="trqseg_v1", selected_members=("fold-0", "fold-1", "fold-2", "fold-3", "fold-4"))
+    assert tq.quantify(seg, method="okamura").qc.paper_criteria_met is True
+    seg.segmentor = tq.SegmentorInfo(name="heuristic_trq", selected_members=("fold-0", "fold-1", "fold-2", "fold-3", "fold-4"))
+    assert tq.quantify(seg, method="okamura").qc.paper_criteria_met is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"aadipose_hu": float("nan")},
+        {"athymic_hu": float("inf")},
+        {"aadipose_hu": 80.0, "athymic_hu": -110.0},
+        {"aadipose_hu": 0.0, "athymic_hu": 0.0},
+        {"delta_hu_margin": -1.0},
+        {"delta_hu_margin": 190.0},
+        {"js_divergence_threshold": float("nan")},
+        {"hu_variance_threshold": "20"},
+    ],
+)
+def test_invalid_options_are_rejected(kwargs):
+    with pytest.raises(ValueError):
+        tq.OkamuraOptions(**kwargs)
+
+
+def test_mode_above_athymic_is_noted():
+    ct = np.full((6, 6, 6), 120.0)
+    result = tq.quantify(_seg(ct), method="okamura")
+    assert result.thymic_tissue_fraction == pytest.approx(1.0)
+    assert any("above Athymic" in w for w in result.warnings)

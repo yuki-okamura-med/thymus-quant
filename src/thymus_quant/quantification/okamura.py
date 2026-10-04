@@ -32,6 +32,41 @@ class OkamuraOptions:
     invalidate_if_any_member_invalid: bool = True
     apply_qc: bool = True
 
+    def __post_init__(self) -> None:
+        for name in (
+            "aadipose_hu",
+            "athymic_hu",
+            "second_peak_ratio_threshold",
+            "js_divergence_threshold",
+            "pairwise_dsc_threshold",
+            "hu_variance_threshold",
+            "delta_hu_margin",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)) or not np.isfinite(value):
+                raise ValueError(f"OkamuraOptions.{name} must be a finite number; got {value!r}")
+        if not self.athymic_hu > self.aadipose_hu:
+            raise ValueError(
+                f"OkamuraOptions.athymic_hu ({self.athymic_hu}) must be greater than aadipose_hu ({self.aadipose_hu})"
+            )
+        if not 0 <= self.delta_hu_margin < self.athymic_hu - self.aadipose_hu:
+            raise ValueError(
+                f"OkamuraOptions.delta_hu_margin must be >= 0 and smaller than athymic_hu - aadipose_hu; got {self.delta_hu_margin}"
+            )
+
+
+# The paper's QC criteria apply to the 5-member TRQseg-v1 ensemble with the default options.
+PAPER_MEMBER_IDS: tuple[str, ...] = tuple(f"fold-{i}" for i in range(5))
+
+
+def _paper_protocol(segmentation: SegmentationResult, options: OkamuraOptions, n_members: int) -> bool:
+    if n_members != len(PAPER_MEMBER_IDS) or options != OkamuraOptions():
+        return False
+    seg = segmentation.segmentor
+    if seg is not None and (seg.name != "trqseg_v1" or tuple(seg.selected_members) != PAPER_MEMBER_IDS):
+        return False
+    return True
+
 
 # Definitions follow the analysis code of the paper (Okamura YT et al., Ann Biomed Eng 2025):
 # the KDE is fitted on every TRQ voxel and evaluated on fixed HU grids inside [-300, 300] HU.
@@ -418,13 +453,27 @@ def quantify_okamura(
         qc_status = "check"
         met = None
     else:
-        met = len(flags) == 0
-        qc_status = "ok" if met else "check"
+        criteria_ok = len(flags) == 0
+        qc_status = "ok" if criteria_ok else "check"
+        if _paper_protocol(segmentation, options, n_members):
+            met = criteria_ok
+        else:
+            met = None
+            warnings_out.append(
+                "paper_criteria_met is None: the paper's QC criteria apply only to the 5-member TRQseg-v1 "
+                "ensemble (fold-0 to fold-4, or 5 supplied member masks) with default OkamuraOptions."
+            )
     if "used_invalid_members" in flags or "invalid_member" in flags:
         met = False if met is True else met
         qc_status = "check" if qc_status != "failed" else qc_status
 
     # Informational only: does not change flags, QC status or paper_criteria_met.
+    n_above = sum(1 for i in computed_indices if modes[i] > options.athymic_hu)
+    if n_above:
+        warnings_out.append(
+            f"A_TRQ is above Athymic ({options.athymic_hu:g} HU) in {n_above} member(s); the thymic tissue fraction "
+            "is capped at 1 there. The method is for non-contrast chest CT; check for contrast enhancement."
+        )
     if segmentation.image is not None:
         warnings_out.extend(segmentation.image.warnings)
     prep = segmentation.preprocessing or {}
