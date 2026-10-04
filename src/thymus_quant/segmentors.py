@@ -131,6 +131,16 @@ def _upsample_label_to_xyz(y_zxy: np.ndarray, x_size: int, y_size: int) -> np.nd
     return y_up.transpose(1, 2, 0)
 
 
+def _sha256_file(path: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 def _looks_like_full_commit_sha(revision: str | None) -> bool:
     """Return True when `revision` already looks like an immutable git SHA."""
     return revision is not None and len(revision) == 40 and all(c in "0123456789abcdefABCDEF" for c in revision)
@@ -164,7 +174,11 @@ class SegmentorInfo:
     cache_dir: str | None = None
     weight_source: Literal["local", "downloaded", "mixed", "none", "unknown"] = "unknown"
     local_source: str | None = None
+    # git HEAD of the local mirror when its weights are used; this is not a Hugging Face commit.
+    local_revision: str | None = None
     preprocessing_version: str | None = None
+    # SHA-256 of each selected member's weight file, in selected_members order, once loaded.
+    weight_sha256: tuple[str | None, ...] = ()
 
 
 @dataclass(slots=True)
@@ -224,7 +238,8 @@ class LoadedSegmentor:
                 revision_for_download = str(resolved)
                 self.info.resolved_revision = revision_for_download
                 for m in self.members:
-                    m.resolved_revision = revision_for_download
+                    if m.weight_source != "local":
+                        m.resolved_revision = revision_for_download
 
         filename = member.relative_path or f"weights/{member.member_id}/model.safetensors"
         path = hf_hub_download(
@@ -280,8 +295,18 @@ class LoadedSegmentor:
                 model.eval()
                 models[m.member_id] = model
 
+            self._record_weight_provenance(target_members)
             self._models = models
             self._runtime_device = runtime_device
+
+    def _record_weight_provenance(self, members: Sequence[SegmentorMember]) -> None:
+        """Record the SHA-256 of each weight file and where the weights came from."""
+        for m in members:
+            if m.local_path and os.path.exists(m.local_path):
+                m.checksum = _sha256_file(m.local_path)
+        self.info.weight_sha256 = tuple(m.checksum for m in members)
+        sources = {m.weight_source for m in members}
+        self.info.weight_source = "mixed" if len(sources) > 1 else (next(iter(sources)) if sources else "none")
 
     def _predict_logits(self, model: Any, x_np: np.ndarray, split_size: int = 64) -> np.ndarray:
         """Run batched forward pass and return raw logits on CPU numpy arrays."""
@@ -557,6 +582,8 @@ class SegmentationResult:
                 "selected_members": list(self.segmentor.selected_members),
                 "weight_source": self.segmentor.weight_source,
                 "local_source": self.segmentor.local_source,
+                "local_revision": self.segmentor.local_revision,
+                "weight_sha256": list(self.segmentor.weight_sha256),
                 "preprocessing_version": self.segmentor.preprocessing_version,
             },
             "image": None
@@ -567,6 +594,8 @@ class SegmentationResult:
                 "orientation": None if self.image.orientation is None else list(self.image.orientation),
                 "source": self.image.source,
                 "geometry": self.image.geometry,
+                "intensity": self.image.intensity,
+                "warnings": list(self.image.warnings),
             },
             "preprocessing": self.preprocessing,
             "merge_strategy": self.merge_strategy,

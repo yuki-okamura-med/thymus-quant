@@ -7,6 +7,7 @@ Design intent:
 - method-specific quantification logic lives under `thymus_quant.quantification`.
 """
 
+import logging
 import os
 import subprocess
 import threading
@@ -30,6 +31,8 @@ from .results import (
 )
 from .segmentors import ImageInput, LoadedSegmentor, SegmentationResult, SegmentorInfo, SegmentorMember
 
+
+logger = logging.getLogger(__name__)
 
 _SEGMENTOR_CACHE: dict[tuple, LoadedSegmentor] = {}
 _SEGMENTOR_CACHE_LOCK = threading.Lock()
@@ -150,6 +153,15 @@ def _resolve_local_git_revision(repo_path: str | None) -> str | None:
     return revision or None
 
 
+def _same_commit(revision: str, local_revision: str | None) -> bool:
+    """True when `revision` is the full commit SHA of the local mirror HEAD.
+
+    Branch or tag names and short SHAs are not treated as a match, because the
+    local mirror cannot tell which commit they name on the Hub.
+    """
+    return local_revision is not None and revision.strip().lower() == local_revision.strip().lower()
+
+
 def _segmentor_cache_key(
     info: SegmentorInfo,
     requested_members: tuple[str, ...],
@@ -219,6 +231,17 @@ def load_segmentor(
 
     local_repo = _find_local_trqseg_v1_repo() if info.repo_id == "yuki-okamura-hf/TRQseg-v1" else None
     local_revision = _resolve_local_git_revision(local_repo)
+    if local_repo is not None and revision is not None and not _same_commit(revision, local_revision):
+        # A pinned revision must not be served by a mirror at another (or an unknown) commit.
+        logger.warning(
+            "Local TRQseg-v1 mirror %s is at %s, not at the requested revision %s; it is not used, and the "
+            "requested revision is loaded from Hugging Face instead.",
+            local_repo,
+            local_revision or "an unknown commit",
+            revision,
+        )
+        local_repo = None
+        local_revision = None
 
     resolved_members = []
     for m in requested:
@@ -241,9 +264,12 @@ def load_segmentor(
     sources = {m.weight_source for m in resolved_members}
     weight_source = "mixed" if len(sources) > 1 else (next(iter(sources)) if sources else "none")
     all_weights_local = bool(resolved_members) and all(m.local_path is not None for m in resolved_members)
-    resolved_revision = local_revision if (all_weights_local and local_revision is not None) else revision
+    # The mirror's HEAD is recorded as local_revision, not as a resolved Hugging Face revision:
+    # the mirror can have its own history (a commit that does not exist on the Hub).
+    resolved_revision = revision
     for m in resolved_members:
-        m.resolved_revision = resolved_revision
+        m.resolved_revision = None if m.local_path else revision
+    any_local = any(m.local_path for m in resolved_members)
     info = SegmentorInfo(
         name=info.name,
         repo_id=info.repo_id,
@@ -254,8 +280,9 @@ def load_segmentor(
         available_members=info.available_members,
         selected_members=requested,
         cache_dir=None if cache_dir is None else str(cache_dir),
-        weight_source=weight_source,  # may become downloaded after lazy load
-        local_source=local_repo,
+        weight_source=weight_source,  # updated when the weights are loaded
+        local_source=local_repo if any_local else None,
+        local_revision=local_revision if any_local else None,
         preprocessing_version=info.preprocessing_version,
     )
 
@@ -313,6 +340,8 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
         segmentor_members=() if sinfo is None else tuple(sinfo.selected_members),
         segmentor_weight_source=None if sinfo is None else sinfo.weight_source,
         segmentor_local_source=None if sinfo is None else sinfo.local_source,
+        segmentor_local_revision=None if sinfo is None else sinfo.local_revision,
+        segmentor_weight_sha256=() if sinfo is None else tuple(sinfo.weight_sha256),
         preprocessing_version=None if sinfo is None else sinfo.preprocessing_version,
         image_shape=None if segmentation.image is None else tuple(segmentation.image.shape),
         spacing_mm=None if segmentation.image is None else tuple(segmentation.image.spacing_mm),
@@ -321,6 +350,7 @@ def _meta(segmentation: SegmentationResult, method: MethodName, detail: DetailLe
         orientation_status=prep.get("orientation_status"),
         reoriented_for_model=prep.get("reoriented_for_model"),
         geometry=None if segmentation.image is None else segmentation.image.geometry,
+        intensity=None if segmentation.image is None else segmentation.image.intensity,
         inplane_shape=None if prep.get("inplane_shape") is None else tuple(prep["inplane_shape"]),
         inplane_is_512=prep.get("inplane_is_512"),
         network_pixel_mm=None if prep.get("network_pixel_mm") is None else tuple(prep["network_pixel_mm"]),
@@ -350,7 +380,7 @@ def quantify(
     detail = _validate_detail(detail, function="quantify", study_id=segmentation.study_id)
     opt = _validate_options(method, options, function="quantify", study_id=segmentation.study_id)
     meta = _meta(segmentation, method, detail)
-    meta.method_version = f"{method}_v1"
+    meta.method_version = f"{method}_v2"
     meta.options = asdict(opt)
     if method == "okamura":
         return quantify_okamura(segmentation, options=opt, detail=detail, meta=meta)
@@ -452,6 +482,9 @@ def analyze_many(
                 detail=detail,
                 device=device,
             )
+            # Failed inputs have no row in to_frame(), so record the position in `images`.
+            if r.meta is not None:
+                r.meta.input_index = i
             results.append(r)
         except Exception as e:
             if on_error == "raise":
