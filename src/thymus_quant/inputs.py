@@ -23,6 +23,11 @@ HU_CHECK_MAX_LOW_HU = -500.0
 # Relative difference allowed between the voxel volume from spacing_mm (header
 # voxel sizes) and the voxel volume of the affine before a warning is given.
 VOXEL_VOLUME_REL_TOL = 1e-3
+# Relative difference allowed between each header voxel size and the matching
+# axis length of the affine after removing shear (QR decomposition).
+VOXEL_SIZE_REL_TOL = 1e-3
+# NIfTI spatial units (xyzt_units) and their size in mm. "unknown" is taken as mm.
+_UNIT_TO_MM = {"mm": 1.0, "unknown": 1.0, "meter": 1000.0, "micron": 0.001}
 
 
 @dataclass(slots=True)
@@ -43,6 +48,15 @@ class ImageContext:
     geometry: dict[str, Any] | None = None
     intensity: dict[str, Any] | None = None
     warnings: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Built directly (not by load_image_context/make_image_context): read the orientation from the affine,
+        # as the loaders do, instead of silently assuming the model orientation.
+        if self.affine is not None and self.geometry is None:
+            self.geometry = geometry_report(self.affine, spacing_mm=self.spacing_mm)
+            if self.orientation is None and self.geometry.get("valid_affine"):
+                self.orientation = _orientation_from_affine(self.affine)
+                self.geometry["orientation_source"] = "affine"
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -72,6 +86,9 @@ def geometry_report(
     - ``voxel_sizes_affine_mm``: column norms of the affine.
     - ``voxel_size_mismatch_max_mm``: largest difference between ``spacing_mm``
       (header zooms) and the affine column norms.
+    - ``voxel_sizes_affine_unsheared_mm`` and ``voxel_size_mismatch_rel_max``: axis
+      lengths of the affine with shear removed (QR decomposition), and the largest
+      relative difference of ``spacing_mm`` from them. This is the voxel size check.
     - ``voxel_volume_affine_mm3`` and ``voxel_volume_mismatch_rel``: voxel volume
       of the affine (``|det|``) and its relative difference from the product of
       ``spacing_mm``, which is used for volumes. Shear (gantry tilt) and
@@ -82,7 +99,8 @@ def geometry_report(
     - ``shear_max``: largest off-diagonal term of the direction-cosine Gram
       matrix (0 for an orthogonal grid).
     - ``qform_code`` / ``sform_code`` and ``qform_sform_max_abs_diff`` when a
-      NIfTI image is given and both transforms are set.
+      NIfTI image is given and both transforms are set, and
+      ``qform_sform_handedness_differs`` (the two disagree on left and right).
     """
     if affine is None:
         return None
@@ -101,13 +119,18 @@ def geometry_report(
             "obliquity_max_deg": float(np.degrees(np.max(np.abs(nib.affines.obliquity(aff))))),
             "shear_max": float(np.max(np.abs(cosines.T @ cosines - np.eye(3)))),
         }
+        vol_affine = float(abs(np.linalg.det(rzs)))
+        if not vol_affine > 0:
+            return {"valid_affine": False}
+        # Axis lengths with shear removed: the voxel edge of each axis perpendicular to the earlier axes.
+        unsheared = np.abs(np.diag(np.linalg.qr(rzs)[1]))
+        report["voxel_sizes_affine_unsheared_mm"] = [float(v) for v in unsheared]
+        report["voxel_volume_affine_mm3"] = vol_affine
         if spacing_mm is not None:
             zooms = np.asarray(spacing_mm, dtype=float)[:3]
             report["voxel_size_mismatch_max_mm"] = float(np.max(np.abs(zooms - sizes)))
-            vol_affine = float(abs(np.linalg.det(rzs)))
-            report["voxel_volume_affine_mm3"] = vol_affine
-            if vol_affine > 0:
-                report["voxel_volume_mismatch_rel"] = float(abs(float(np.prod(zooms)) - vol_affine) / vol_affine)
+            report["voxel_size_mismatch_rel_max"] = float(np.max(np.abs(zooms - unsheared) / unsheared))
+            report["voxel_volume_mismatch_rel"] = float(abs(float(np.prod(zooms)) - vol_affine) / vol_affine)
         if image is not None and hasattr(image, "get_qform") and hasattr(image, "get_sform"):
             qform, qcode = image.get_qform(coded=True)
             sform, scode = image.get_sform(coded=True)
@@ -115,6 +138,9 @@ def geometry_report(
             report["sform_code"] = int(scode)
             if qform is not None and sform is not None and int(qcode) > 0 and int(scode) > 0:
                 report["qform_sform_max_abs_diff"] = float(np.max(np.abs(np.asarray(qform) - np.asarray(sform))))
+                q_det = float(np.linalg.det(np.asarray(qform, dtype=float)[:3, :3]))
+                s_det = float(np.linalg.det(np.asarray(sform, dtype=float)[:3, :3]))
+                report["qform_sform_handedness_differs"] = bool(np.sign(q_det) != np.sign(s_det))
         return report
     except Exception:
         return {"valid_affine": False}
@@ -167,14 +193,43 @@ def input_warnings(
             f"CT has {intensity['n_nonfinite']} non-finite values (NaN/inf). They are passed to the segmentation "
             "network as they are, and a member whose TRQ contains any of them is not computed."
         )
-    rel = None if geometry is None else geometry.get("voxel_volume_mismatch_rel")
-    if rel is not None and rel > VOXEL_VOLUME_REL_TOL:
+    geo = geometry or {}
+    rel = geo.get("voxel_size_mismatch_rel_max")
+    if rel is not None and rel > VOXEL_SIZE_REL_TOL:
         sizes = ", ".join(f"{v:.4g}" for v in spacing_mm)
-        affine_sizes = ", ".join(f"{v:.4g}" for v in geometry.get("voxel_sizes_affine_mm", []))
+        affine_sizes = ", ".join(f"{v:.4g}" for v in geo.get("voxel_sizes_affine_unsheared_mm", []))
         notes.append(
-            f"Voxel sizes ({sizes} mm, from the header) disagree with the affine (column norms {affine_sizes} mm): "
-            f"the voxel volumes differ by {100.0 * rel:.2f}%. Volumes and ETV use the header voxel sizes; "
-            "check how the file was written."
+            f"Voxel sizes ({sizes} mm, from the header) disagree with the affine (axis lengths without shear "
+            f"{affine_sizes} mm; largest difference {100.0 * rel:.2f}%, voxel volume {100.0 * geo.get('voxel_volume_mismatch_rel', 0.0):.2f}%). "
+            "Volumes and ETV use the header voxel sizes; check how the file was written."
+        )
+    if geo.get("valid_affine") is False:
+        notes.append(
+            "The affine is not usable (non-finite or singular), so the voxel order (orientation) is unknown; "
+            "the voxel array is used as stored (assumed LAS for TRQseg-v1)."
+        )
+    if geo.get("orientation_source") == "fallback":
+        notes.append(
+            "NIfTI orientation is unspecified (qform_code = sform_code = 0). nibabel then assumes LAS, which is not "
+            "information from the file; the voxel array is used as stored (assumed LAS for TRQseg-v1). Check the "
+            "source image geometry."
+        )
+    if geo.get("qform_sform_handedness_differs"):
+        notes.append(
+            "The qform and sform of this NIfTI disagree on left and right (opposite handedness). nibabel uses the "
+            "sform; other tools may use the qform. Check the file's orientation."
+        )
+    if geo.get("unit_scale_to_mm", 1.0) != 1.0:
+        notes.append(
+            f"NIfTI spatial unit is {geo.get('spatial_unit')}; voxel sizes and the affine were converted to mm "
+            f"(x {geo['unit_scale_to_mm']:g})."
+        )
+    if geo.get("default_like_header"):
+        notes.append(
+            "The NIfTI geometry looks like library defaults (1 mm voxels, axis-aligned unit affine, origin 0). This is "
+            "valid for data resampled that way, but also appears when spatial information is lost while saving an "
+            "array (for example nibabel.Nifti1Image(arr, np.eye(4)) or SimpleITK.GetImageFromArray without copying "
+            "spacing and direction). Check that the voxel sizes and orientation are real."
         )
     for note in notes:
         logger.warning(note)
@@ -219,15 +274,36 @@ def load_image_context(image: Any, *, source: str | None = None) -> ImageContext
         img = nib.load(str(image))
 
     ct = validate_ct_hu(np.asarray(img.get_fdata(), dtype=np.float32))
-    spacing = validate_spacing(img.header.get_zooms()[:3])
-    geometry = geometry_report(img.affine, spacing_mm=spacing, image=img)
+    unit = "unknown"
+    if hasattr(img.header, "get_xyzt_units"):
+        unit = str(img.header.get_xyzt_units()[0] or "unknown")
+    scale = _UNIT_TO_MM.get(unit, 1.0)
+    zooms = np.asarray(img.header.get_zooms()[:3], dtype=float)
+    spacing = validate_spacing(zooms * scale)
+    affine = np.asarray(img.affine, dtype=float).copy()
+    affine[:3, :] *= scale
+    geometry = geometry_report(affine, spacing_mm=spacing, image=img)
+    geometry["spatial_unit"] = unit
+    geometry["unit_scale_to_mm"] = scale
+    orientation = _orientation_from_affine(affine) if geometry.get("valid_affine") else None
+    geometry["orientation_source"] = "affine" if orientation is not None else None
+    if geometry.get("qform_code") == 0 and geometry.get("sform_code") == 0:
+        # No orientation is given in the file; nibabel's fallback affine assumes LAS.
+        orientation = None
+        geometry["orientation_source"] = "fallback"
+    geometry["default_like_header"] = bool(
+        geometry.get("valid_affine")
+        and np.allclose(np.abs(affine[:3, :3]), np.eye(3), atol=1e-6)
+        and np.allclose(affine[:3, 3], 0.0, atol=1e-6)
+        and np.allclose(zooms * scale, 1.0, atol=1e-6)
+    )
     intensity = intensity_report(ct)
     return ImageContext(
         ct_hu=ct,
         spacing_mm=spacing,
-        affine=np.asarray(img.affine),
+        affine=affine,
         source=src,
-        orientation=_orientation_from_affine(img.affine),
+        orientation=orientation,
         geometry=geometry,
         intensity=intensity,
         warnings=input_warnings(spacing_mm=spacing, geometry=geometry, intensity=intensity),
@@ -245,8 +321,18 @@ def make_image_context(
     """Build a validated ImageContext from arrays."""
     ct = validate_ct_hu(ct_hu)
     spacing = validate_spacing(spacing_mm)
-    orient = orientation if orientation is not None else _orientation_from_affine(affine)
     geometry = geometry_report(affine, spacing_mm=spacing)
+    from_affine = _orientation_from_affine(affine) if geometry is not None and geometry.get("valid_affine") else None
+    if orientation is not None:
+        orient = tuple(str(c) for c in orientation)
+        if from_affine is not None and orient != from_affine:
+            raise InputValidationError(
+                f"orientation {orient} contradicts the affine, whose voxel order is {from_affine}; give one of them"
+            )
+    else:
+        orient = from_affine
+    if geometry is not None:
+        geometry["orientation_source"] = "explicit" if orientation is not None else ("affine" if from_affine else None)
     intensity = intensity_report(ct)
     return ImageContext(
         ct_hu=ct,

@@ -157,13 +157,22 @@ Data contract:
 - CT and mask shapes must match exactly.
 - `spacing_mm` is 3 positive finite values in millimeters.
 - `spacing_mm` (for NIfTI files, the header voxel sizes) is normalized to Python
-  floats and used for voxel-volume calculation. It is not changed. When an
-  affine is available and the voxel volume from `spacing_mm` differs from the
-  voxel volume of the affine (`|det|`) by more than 0.1%, a WARNING is logged by
-  the `thymus_quant.inputs` logger and a note is added to `result.warnings`;
-  volumes and ETV still use `spacing_mm`. Shear (gantry tilt) and rotation do
-  not change the voxel volume and are not warned about. See the geometry report
-  below.
+  floats and used for voxel-volume calculation. NIfTI files whose spatial unit
+  (`xyzt_units`) is meter or micron are converted to mm, with a note; "unknown"
+  is taken as mm. When an affine is available, each voxel size is compared with
+  the matching axis length of the affine after removing shear (QR
+  decomposition); when any differs by more than 0.1%, a WARNING is logged by the
+  `thymus_quant.inputs` logger and a note is added to `result.warnings`. Volumes
+  and ETV still use `spacing_mm`. Gantry tilt (shear of the slice axis) and
+  rotation do not cause this warning when the header gives the perpendicular
+  slice spacing. See the geometry report below.
+- Other header notes: the NIfTI orientation is unspecified
+  (`qform_code = sform_code = 0`; nibabel's fallback LAS is not used as known
+  orientation), the qform and sform disagree on left and right, the affine is
+  not usable (non-finite or singular), or the header looks like library
+  defaults (1 mm voxels, axis-aligned unit affine, origin 0, as written by
+  `nibabel.Nifti1Image(arr, np.eye(4))` or SimpleITK without copying spacing
+  and direction; this is only a hint).
 - The input notes above do not change values, `flags`, `qc.status` or
   `qc.paper_criteria_met`. `result.warnings` is also in the `warnings` column of
   `to_record()` / `to_frame()`.
@@ -199,6 +208,12 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
   Arrays without affine or orientation are used as given (assumed LAS).
 - LAS inputs take the same path as before, with identical results.
 - Oblique or sheared affines are not resampled. Their geometry is recorded.
+- When the orientation is unspecified (`qform_code = sform_code = 0`) or the
+  affine is not usable, the array is used as given (`assumed_model_orientation`)
+  and a note is added. An `ImageContext` built directly with an `affine` takes
+  its orientation from that affine. `make_image_context(..., orientation=...)`
+  raises `InputValidationError` when the given orientation contradicts the
+  affine.
 - The handling is recorded in `SegmentationResult.preprocessing` and in the
   result metadata: `model_orientation`, `orientation_status`
   (`model_orientation`, `reoriented`, `assumed_model_orientation`, `unresolved`),
@@ -208,11 +223,13 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
   `thymus_quant.segmentors` logger.
 - `geometry` (in `ImageContext`, `SegmentationResult.to_dict()["image"]` and the
   result metadata) records `voxel_sizes_affine_mm`, `voxel_size_mismatch_max_mm`,
+  `voxel_sizes_affine_unsheared_mm`, `voxel_size_mismatch_rel_max`,
   `voxel_volume_affine_mm3`, `voxel_volume_mismatch_rel`, `obliquity_max_deg`,
-  `shear_max`, and, for NIfTI images, `qform_code`, `sform_code` and
-  `qform_sform_max_abs_diff`. These values are reported only; the only
-  threshold applied is the 0.1% voxel-volume difference that gives a warning
-  (see Data contract).
+  `shear_max`, `orientation_source` (`affine`, `fallback`, `explicit` or None),
+  `default_like_header`, and, for NIfTI images, `spatial_unit`,
+  `unit_scale_to_mm`, `qform_code`, `sform_code`, `qform_sform_max_abs_diff` and
+  `qform_sform_handedness_differs`. Only the notes described in the data
+  contract are derived from them.
 - The heuristic segmentor (`heuristic_trq`, debug only) is not affected.
 
 ### In-plane size
