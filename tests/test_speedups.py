@@ -45,16 +45,15 @@ def test_grouped_kde_rejects_what_scipy_rejects():
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
-def test_mode_ratio_and_jsd_pdf_unchanged(monkeypatch, seed):
+def test_member_kde_summary_unchanged_against_scipy_kde(monkeypatch, seed):
     v = _hu_like(np.random.default_rng(seed), 20_000)
-    new_mode = okm._kde_mode_and_second_ratio(v)
-    new_pdf = okm._kde_pdf_for_jsd(v)[1]
+    new = okm._kde_mode_and_second_ratio(v)
     monkeypatch.setattr(okm, "gaussian_kde", scipy_gaussian_kde)
-    ref_mode = okm._kde_mode_and_second_ratio(v)
-    ref_pdf = okm._kde_pdf_for_jsd(v)[1]
-    assert new_mode[0] == ref_mode[0]
-    assert new_mode[1] == pytest.approx(ref_mode[1], rel=1e-9, abs=1e-12)
-    np.testing.assert_allclose(new_pdf, ref_pdf, rtol=1e-9, atol=1e-18)
+    ref = okm._kde_mode_and_second_ratio(v)
+    assert new.mode == ref.mode
+    assert new.mode_qc == ref.mode_qc
+    assert new.second_peak_ratio == pytest.approx(ref.second_peak_ratio, rel=1e-9, abs=1e-12)
+    np.testing.assert_allclose(new.density_qc, ref.density_qc, rtol=1e-9, atol=1e-18)
 
 
 def _synthetic_study(seed=0, shape=(48, 44, 30), n_members=5):

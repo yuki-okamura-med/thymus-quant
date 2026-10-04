@@ -254,6 +254,43 @@ back to `heuristic_trq`.
 - `etv_ml`: summary ETV in mL.
 - `trq_volume_ml`: summary TRQ volume in mL.
 
+### How the Okamura values are computed (method version `okamura_v2`)
+
+These follow the analysis code of the paper.
+
+- For each member, a Gaussian KDE (`scipy.stats.gaussian_kde`, Scott's rule) is
+  fitted to the HU values of every TRQ voxel and evaluated on fixed grids from
+  -300 to 300 HU. Peaks are the strict local maxima inside this window, so a
+  peak outside it (for example, air) is never the mode.
+- `A_TRQ` (`trq_hu_mode`) is the highest peak on a 0.1 HU grid. The paper used
+  a 1 HU grid; the 0.1 HU grid only removes up to 0.5 HU of rounding, which
+  matters for fatty TRQs because ETV is proportional to `A_TRQ + 110`.
+- The second-peak ratio (multimodality, invalid when above 0.5) and the mode
+  used for the HU value variance are taken on the 1 HU grid, as in the paper.
+- A member needs at least 2 TRQ voxels and a peak inside the window; otherwise
+  it is not computed (`computation_failed`, with `too_few_voxels` or
+  `kde_failed`).
+- The ensemble QC values are computed over all supplied members, as in the
+  paper: mean pairwise DSC (pairs of two empty masks are skipped; a member that
+  was not computed counts with its mask), mean pairwise Jensen-Shannon value
+  (pairs where both members have a KDE), and the unbiased variance of the 1 HU
+  modes (None, with `hu_variance_unavailable`, when any member has no mode).
+- The Jensen-Shannon value is the JS **distance** of
+  `scipy.spatial.distance.jensenshannon` on the 1 HU KDE curves: the square root
+  of the JS divergence with the natural logarithm. The paper calls it the JS
+  divergence, and its threshold 0.1 refers to this value. Grid points where
+  both curves are below 1e-300 are left out to avoid an infinite value from
+  floating-point underflow.
+- The criteria pass when the mean pairwise JS value is at most 0.1, the mean
+  pairwise DSC is at least 0.7 and the HU value variance is at most 20.
+
+Before 0.1.0a5 (`okamura_v1`), the mode was taken on a grid spanning the
+data's minimum to maximum, peaks outside -300..300 HU could be the mode, and the
+JS value was the base-2 JS divergence of HU values clipped to -300..300 HU,
+computed only over QC-valid members. That value is much smaller than the JS
+distance (on the paper's 31-case test set, median 0.002 and maximum 0.018
+against 0.031 and 0.094), so the JS criterion was in practice never triggered.
+
 Okamura member fields are per-member values. The `*_members` tuples have one
 entry per member, in the order of `members`; a member whose values could not be
 computed (for example, an empty mask) has None. Summary fields are ensemble
@@ -270,8 +307,9 @@ Statuses are intentionally simple:
 - `not_available`: not applicable.
 
 Important flags include `invalid_member`, `all_members_invalid`,
-`used_invalid_members`, `kde_failed`, `ensemble_qc_unavailable`, and
-`ensemble_qc_not_applied`.
+`used_invalid_members`, `kde_failed`, `ensemble_qc_unavailable`,
+`ensemble_qc_not_applied`, `high_jsd`, `low_dsc`, `high_hu_variance`,
+`jsd_unavailable`, and `hu_variance_unavailable`.
 
 For the Okamura method, a non-unimodal member distribution is marked invalid
 with `multimodal_or_invalid`. By default, any invalid member adds

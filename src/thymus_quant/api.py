@@ -374,7 +374,7 @@ def quantify(
     detail = _validate_detail(detail, function="quantify", study_id=segmentation.study_id)
     opt = _validate_options(method, options, function="quantify", study_id=segmentation.study_id)
     meta = _meta(segmentation, method, detail)
-    meta.method_version = f"{method}_v1"
+    meta.method_version = f"{method}_v2"
     meta.options = asdict(opt)
     if method == "okamura":
         return quantify_okamura(segmentation, options=opt, detail=detail, meta=meta)

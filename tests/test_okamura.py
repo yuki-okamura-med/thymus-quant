@@ -142,8 +142,9 @@ def test_failed_member_does_not_shift_summary_or_member_values():
     assert result.trq_hu_mode == pytest.approx(np.median([alone[i].trq_hu_mode for i in valid]))
     assert result.trq_volume_ml == pytest.approx(np.median([alone[i].trq_volume_ml for i in valid]))
     assert result.thymic_tissue_fraction == pytest.approx(np.median([alone[i].thymic_tissue_fraction for i in valid]))
-    assert result.qc.hu_variance == pytest.approx(np.var([alone[i].trq_hu_mode for i in valid], ddof=1))
-    assert "high_hu_variance" not in result.flags
+    # As in the paper, the ensemble QC uses all supplied members: fold-1 has no mode, so there is no HU variance.
+    assert result.qc.hu_variance is None
+    assert "hu_variance_unavailable" in result.flags
     assert result.status == "check"
     assert "computation_failed" in result.members[1].flags
 
