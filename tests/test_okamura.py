@@ -49,15 +49,16 @@ def test_kde_exception_is_not_median_mode(monkeypatch):
 
 
 def test_valid_and_invalid_member_mixture_uses_valid_summary():
-    ct1 = np.full((6, 6, 6), -15.0)
-    ct2 = ct1.copy()
-    ct2[1:-1, 1:-1, 1:-1] = np.tile(np.array([-100.0, 50.0]), 32).reshape(4, 4, 4)
-    masks = [_mask(), _mask()]
-    seg = _seg(ct2, masks=masks)
-    result = tq.quantify(seg, method="okamura", options=tq.OkamuraOptions(second_peak_ratio_threshold=-1.0))
+    # Four unimodal members and one that spans fat and soft tissue (multimodal), default options.
+    ct = _two_tissue_ct()
+    masks = [_box(ct.shape, 12, 28), _box(ct.shape, 13, 29), _box(ct.shape, 14, 28), _box(ct.shape, 12, 27), _box(ct.shape, 18, 42)]
+    result = tq.quantify(_nn_like_seg(ct, masks), method="okamura", detail="full")
+    assert [m.valid for m in result.members] == [True, True, True, True, False]
     assert result.status == "check"
     assert "invalid_member" in result.flags
+    assert "excluded_invalid_members" in result.flags
     assert result.qc.paper_criteria_met is False
+    assert result.etv_ml == pytest.approx(np.median([_alone(ct, masks[i]).etv_ml for i in range(4)]))
 
 
 def test_all_members_qc_invalid_but_computable_returns_check_with_flags():
@@ -71,7 +72,7 @@ def test_all_members_qc_invalid_but_computable_returns_check_with_flags():
     assert result.status == "check"
     assert "all_members_invalid" in result.flags
     assert "used_invalid_members" in result.flags
-    assert result.qc.paper_criteria_met is False
+    assert result.qc.paper_criteria_met is None  # 2 members and custom options: not the paper's protocol
 
 
 def test_all_members_computation_failed_returns_failed(monkeypatch):
@@ -96,3 +97,161 @@ def test_jsd_identity_symmetry_and_dice_edges():
 
     assert dice(np.zeros((2, 2)), np.zeros((2, 2))) == 1.0
     assert dice(np.ones((2, 2)), np.zeros((2, 2))) == 0.0
+
+
+def _two_tissue_ct():
+    """Air, with a soft-tissue block whose upper half in axis 1 is fat."""
+    rng = np.random.default_rng(0)
+    ct = rng.normal(-1000, 5, (64, 64, 20)).astype(np.float32)
+    ct[10:50, 10:50, 2:18] = rng.normal(-40, 12, (40, 40, 16))
+    ct[10:50, 30:50, 2:18] = rng.normal(-110, 12, (40, 20, 16))
+    return ct
+
+
+def _box(shape, y0, y1):
+    m = np.zeros(shape, dtype=np.uint8)
+    m[15:45, y0:y1, 4:16] = 1
+    return m
+
+
+def _nn_like_seg(ct, masks):
+    """Members as TRQseg-v1 returns them: a member mask may be empty."""
+    from thymus_quant.inputs import make_image_context
+
+    return tq.SegmentationResult(
+        study_id="case",
+        image=make_image_context(ct_hu=ct, spacing_mm=(1.0, 1.0, 1.0)),
+        members=tuple(tq.SegmentationMember(f"fold-{i}", m) for i, m in enumerate(masks)),
+    )
+
+
+def _alone(ct, mask):
+    return tq.quantify(tq.SegmentationResult.from_mask(trq_mask=mask, ct_hu=ct, spacing_mm=(1.0, 1.0, 1.0)), method="okamura")
+
+
+def test_failed_member_does_not_shift_summary_or_member_values():
+    # fold-1 is empty (computation fails); fold-4 spans fat and soft tissue (multimodal, invalid).
+    ct = _two_tissue_ct()
+    masks = [_box(ct.shape, 12, 28), np.zeros(ct.shape, np.uint8), _box(ct.shape, 13, 29), _box(ct.shape, 14, 28), _box(ct.shape, 18, 42)]
+    alone = {i: _alone(ct, m) for i, m in enumerate(masks) if m.any()}
+    assert [alone[i].members[0].valid for i in (0, 2, 3, 4)] == [True, True, True, False]
+
+    result = tq.quantify(_nn_like_seg(ct, masks), method="okamura", detail="full")
+
+    valid = (0, 2, 3)
+    assert result.etv_ml == pytest.approx(np.median([alone[i].etv_ml for i in valid]))
+    assert result.trq_hu_mode == pytest.approx(np.median([alone[i].trq_hu_mode for i in valid]))
+    assert result.trq_volume_ml == pytest.approx(np.median([alone[i].trq_volume_ml for i in valid]))
+    assert result.thymic_tissue_fraction == pytest.approx(np.median([alone[i].thymic_tissue_fraction for i in valid]))
+    # As in the paper, the ensemble QC uses all supplied members: fold-1 has no mode, so there is no HU variance.
+    assert result.qc.hu_variance is None
+    assert "hu_variance_unavailable" in result.flags
+    assert result.status == "check"
+    assert "computation_failed" in result.members[1].flags
+
+    for name in ("trq_hu_mode", "trq_volume_ml", "etv_ml", "thymic_tissue_fraction"):
+        per_member = getattr(result, f"{name}_members")
+        assert len(per_member) == len(result.members) == 5
+        assert per_member[1] is None
+        for i in (0, 2, 3, 4):
+            assert per_member[i] == pytest.approx(getattr(alone[i], name))
+            assert per_member[i] == pytest.approx(getattr(result.members[i], name))
+    assert result.atrq_below_aadipose_members[1] is None
+    assert result.to_dict()["member_values"]["etv_ml_members"][1] is None
+
+
+def test_failed_member_before_the_last_does_not_raise():
+    ct = _two_tissue_ct()
+    masks = [_box(ct.shape, 12, 28), np.zeros(ct.shape, np.uint8), _box(ct.shape, 13, 29), _box(ct.shape, 14, 28), _box(ct.shape, 12, 27)]
+    result = tq.quantify(_nn_like_seg(ct, masks), method="okamura")
+    computed = (0, 2, 3, 4)
+    assert result.qc.valid_member_count == 4
+    assert result.etv_ml == pytest.approx(np.median([_alone(ct, masks[i]).etv_ml for i in computed]))
+    assert result.etv_ml_members[1] is None
+
+
+def test_apply_qc_false_does_not_report_paper_criteria_met():
+    ct = _two_tissue_ct()
+    wide, thin = _box(ct.shape, 10, 30), _box(ct.shape, 12, 16)
+    seg = _nn_like_seg(ct, [wide, wide, thin, thin, thin])  # mean pairwise DSC 0.6
+    checked = tq.quantify(seg, method="okamura")
+    assert "low_dsc" in checked.flags
+    assert checked.qc.paper_criteria_met is False
+
+    unchecked = tq.quantify(seg, method="okamura", options=tq.OkamuraOptions(apply_qc=False))
+    assert unchecked.status == "check"
+    assert unchecked.qc.status == "check"
+    assert unchecked.qc.paper_criteria_met is None
+    assert "ensemble_qc_not_applied" in unchecked.flags
+    assert "low_dsc" not in unchecked.flags
+    assert unchecked.qc.mean_pairwise_dsc == pytest.approx(checked.qc.mean_pairwise_dsc)
+    assert unchecked.etv_ml == pytest.approx(checked.etv_ml)
+
+    clean = tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura", options=tq.OkamuraOptions(apply_qc=False))
+    assert clean.status == "check"
+    assert clean.qc.paper_criteria_met is None
+    assert tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura").status == "ok"
+
+
+def test_member_with_nonfinite_hu_in_trq_is_not_computed():
+    ct = _two_tissue_ct()
+    wide = _box(ct.shape, 12, 28)
+    holed = ct.copy()
+    holed[20, 15, 8] = np.nan  # inside every member's TRQ
+    seg = _nn_like_seg(holed, [wide] * 5)
+    res = tq.quantify(seg, method="okamura", detail="full")
+    assert res.status == "failed"
+    assert all("nonfinite_hu" in m.flags and "computation_failed" in m.flags for m in res.members)
+    assert res.etv_ml is None and res.trq_volume_ml is None
+
+    # Missing values only in one member's TRQ: that member fails, the others are summarized.
+    other = _box(ct.shape, 13, 29)
+    holed2 = ct.copy()
+    holed2[20, 28, 8] = np.inf  # inside `other` only
+    res2 = tq.quantify(_nn_like_seg(holed2, [wide, other, wide, wide, wide]), method="okamura", detail="full")
+    assert "nonfinite_hu" in res2.members[1].flags
+    assert res2.etv_ml_members[1] is None
+    assert res2.etv_ml == pytest.approx(_alone(ct, wide).etv_ml)
+    assert res2.status == "check"
+
+
+def test_paper_criteria_only_for_the_five_member_protocol_with_default_options():
+    ct = _two_tissue_ct()
+    wide = _box(ct.shape, 12, 28)
+    five = tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura")
+    assert five.status == "ok" and five.qc.paper_criteria_met is True
+    two = tq.quantify(_nn_like_seg(ct, [wide] * 2), method="okamura")
+    assert two.status == "ok" and two.qc.paper_criteria_met is None
+    assert any("paper_criteria_met is None" in w for w in two.warnings)
+    custom = tq.quantify(_nn_like_seg(ct, [wide] * 5), method="okamura", options=tq.OkamuraOptions(pairwise_dsc_threshold=0.5))
+    assert custom.qc.paper_criteria_met is None
+    seg = _nn_like_seg(ct, [wide] * 5)
+    seg.segmentor = tq.SegmentorInfo(name="trqseg_v1", selected_members=("fold-0", "fold-1", "fold-2", "fold-3", "fold-4"))
+    assert tq.quantify(seg, method="okamura").qc.paper_criteria_met is True
+    seg.segmentor = tq.SegmentorInfo(name="heuristic_trq", selected_members=("fold-0", "fold-1", "fold-2", "fold-3", "fold-4"))
+    assert tq.quantify(seg, method="okamura").qc.paper_criteria_met is None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"aadipose_hu": float("nan")},
+        {"athymic_hu": float("inf")},
+        {"aadipose_hu": 80.0, "athymic_hu": -110.0},
+        {"aadipose_hu": 0.0, "athymic_hu": 0.0},
+        {"delta_hu_margin": -1.0},
+        {"delta_hu_margin": 190.0},
+        {"js_divergence_threshold": float("nan")},
+        {"hu_variance_threshold": "20"},
+    ],
+)
+def test_invalid_options_are_rejected(kwargs):
+    with pytest.raises(ValueError):
+        tq.OkamuraOptions(**kwargs)
+
+
+def test_mode_above_athymic_is_noted():
+    ct = np.full((6, 6, 6), 120.0)
+    result = tq.quantify(_seg(ct), method="okamura")
+    assert result.thymic_tissue_fraction == pytest.approx(1.0)
+    assert any("above Athymic" in w for w in result.warnings)

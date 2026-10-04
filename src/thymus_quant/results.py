@@ -60,6 +60,7 @@ class ResultMeta:
     method: MethodName | None = None
     detail: DetailLevel = "summary"
     input_source: str | None = None
+    input_index: int | None = None
     segmentor_name: str | None = None
     segmentor_repo_id: str | None = None
     segmentor_requested_revision: str | None = None
@@ -67,6 +68,8 @@ class ResultMeta:
     segmentor_members: tuple[str, ...] = ()
     segmentor_weight_source: str | None = None
     segmentor_local_source: str | None = None
+    segmentor_local_revision: str | None = None
+    segmentor_weight_sha256: tuple[str | None, ...] = ()
     preprocessing_version: str | None = None
     image_shape: tuple[int, int, int] | None = None
     spacing_mm: tuple[float, float, float] | None = None
@@ -79,6 +82,7 @@ class ResultMeta:
     orientation_status: str | None = None
     reoriented_for_model: bool | None = None
     geometry: dict[str, Any] | None = None
+    intensity: dict[str, Any] | None = None
     inplane_shape: tuple[int, int] | None = None
     inplane_is_512: bool | None = None
     network_pixel_mm: tuple[float, float] | None = None
@@ -169,7 +173,8 @@ class AnalysisResultOkamura(AnalysisResultBase):
     """Study-level output for the Okamura method.
 
     Fields with `_members` suffix contain per-member values in the same order
-    as `members`.
+    as `members`, one entry per member. Members whose values could not be
+    computed (for example, an empty mask) have None.
 
     Notes
     -----
@@ -182,11 +187,11 @@ class AnalysisResultOkamura(AnalysisResultBase):
     etv_ml: float | None = None
     thymic_tissue_fraction: float | None = None
     atrq_below_aadipose_any: bool | None = None
-    trq_hu_mode_members: Sequence[float] = field(default_factory=tuple)
-    trq_volume_ml_members: Sequence[float] = field(default_factory=tuple)
-    etv_ml_members: Sequence[float] = field(default_factory=tuple)
-    thymic_tissue_fraction_members: Sequence[float] = field(default_factory=tuple)
-    atrq_below_aadipose_members: Sequence[bool] = field(default_factory=tuple)
+    trq_hu_mode_members: Sequence[float | None] = field(default_factory=tuple)
+    trq_volume_ml_members: Sequence[float | None] = field(default_factory=tuple)
+    etv_ml_members: Sequence[float | None] = field(default_factory=tuple)
+    thymic_tissue_fraction_members: Sequence[float | None] = field(default_factory=tuple)
+    atrq_below_aadipose_members: Sequence[bool | None] = field(default_factory=tuple)
     qc: OkamuraQC | None = None
     members: Sequence[OkamuraMemberResult] = field(default_factory=tuple)
 
@@ -239,9 +244,12 @@ class AnalysisResultOkamura(AnalysisResultBase):
         orientation = None if meta is None or meta.orientation is None else "".join(str(c) for c in meta.orientation)
         return {
             "study_id": self.study_id,
+            "input_index": None if meta is None else meta.input_index,
+            "input_source": None if meta is None else meta.input_source,
             "method": self.method,
             "status": self.status,
             "flags": tuple(self.flags),
+            "warnings": tuple(self.warnings),
             "failure_reason": self.failure_reason,
             "trq_hu_mode": self.trq_hu_mode,
             "trq_volume_ml": self.trq_volume_ml,
@@ -316,6 +324,7 @@ class BatchAnalysisResultOkamura(BatchAnalysisResultBase):
                 rows.append(
                     {
                         "study_id": r.study_id,
+                        "input_index": None if r.meta is None else r.meta.input_index,
                         "member_id": m.member_id,
                         "valid": m.valid,
                         "trq_hu_mode": m.trq_hu_mode,

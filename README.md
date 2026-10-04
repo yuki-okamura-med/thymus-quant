@@ -4,15 +4,40 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
-From version 0.1.0a4, thymus-quant checks the voxel order (orientation) of the
-input image and, when needed, reorders the voxels to the order used for training
-(LAS) before segmentation. Earlier versions used the voxel array as stored in the
-file. If your NIfTI files were not in LAS order (for example, files written by
-ITK or SimpleITK, which are usually LPS, or files reoriented to RAS), the
-segmentation with earlier versions may have been poor, and we recommend running
-those images again with 0.1.0a4 or later. You can check the voxel order of a file
-with `nibabel.aff2axcodes(nibabel.load(path).affine)`; see
+## Important changes in recent versions
+
+**0.1.0a5: QC values and A_TRQ are now computed as in the paper's analysis code.
+QC results can differ from earlier versions; we recommend re-running analyses
+done with earlier versions.** The most important change is the Jensen-Shannon
+value: it is now the JS distance that the paper's threshold of 0.1 refers to.
+Earlier versions computed a much smaller quantity, so their JS criterion was in
+practice never triggered, and studies the paper would have excluded could pass
+QC. A_TRQ and ETV change slightly (A_TRQ is now taken on a 0.1 HU grid). A bug
+that could give a wrong summary when one member could not be computed (status
+`check`) is also fixed. Results from 0.1.0a5 record
+`meta.method_version = "okamura_v2"` (earlier versions: `okamura_v1`). See
+[How the Okamura values are computed](#how-the-okamura-values-are-computed).
+
+**0.1.0a4: the voxel order (orientation) of the input is now checked. If your
+NIfTI files were not in LAS order, segmentations from earlier versions may have
+been poor.** From 0.1.0a4, thymus-quant reorders the voxels to the order used
+for training (LAS) before segmentation, when needed. Earlier versions used the
+voxel array as stored in the file. Files written by ITK or SimpleITK (usually
+LPS) or reoriented to RAS were affected; please run those images again with
+0.1.0a5. You can check the voxel order of a file with
+`nibabel.aff2axcodes(nibabel.load(path).affine)`; see
 [Voxel order (orientation)](#voxel-order-orientation) for details.
+
+## Intended input
+
+**TRQseg-v1 and the QC thresholds were developed on non-contrast axial chest CT**
+reconstructed with a soft-tissue (standard) kernel, 512 x 512 pixels and 1-3 mm
+slices (the inclusion criteria of the paper). Other CT (contrast-enhanced, lung
+or sharp kernels, thicker slices, PET/CT or radiotherapy planning CT) is
+processed, but results have not been validated; contrast enhancement raises
+A_TRQ and therefore ETV.
+
+## Readouts and APIs
 
 Main readouts:
 
@@ -37,7 +62,8 @@ pip install thymus-quant
 ```
 
 This installs the dependencies needed for both quantification and TRQseg-v1
-segmentation.
+segmentation (NumPy, SciPy, nibabel, pandas, PyTorch, torchvision, safetensors
+and huggingface_hub).
 
 Model weights are loaded through the Hugging Face cache unless `local_files_only`
 or an explicit local mirror is configured. A local TRQseg-v1 mirror may be set
@@ -80,10 +106,21 @@ available CUDA device, and otherwise falls back to CPU.
 
 When weights are loaded from Hugging Face, branch/tag/default revisions are
 resolved to the underlying commit SHA before download and recorded in result
-metadata. When all selected weights are loaded from a local git mirror, the local
-mirror's HEAD commit is recorded instead. The result metadata distinguishes
-requested and resolved revision and records the weight source (`local`,
-`downloaded`, `mixed`, or `none`).
+metadata (`segmentor_revision`).
+
+A local mirror (`THYQ_TRQSEG_V1_LOCAL_REPO`) is used when no `revision` is given,
+or when `revision` is the full commit SHA of the mirror's HEAD. If `revision` is
+anything else (another commit, a branch or tag name, or a short SHA), or the
+mirror's HEAD cannot be read, the mirror is not used: a WARNING is logged by the
+`thymus_quant.api` logger and the requested revision is loaded from Hugging Face
+(or its cache). The mirror's HEAD is recorded separately as
+`segmentor_local_revision`: a mirror can have its own git history, so its HEAD
+is not a Hugging Face commit.
+
+Once the weights are loaded, the result metadata records the weight source
+(`local`, `downloaded` or `mixed`) and the SHA-256 of each member's weight file
+(`segmentor_weight_sha256`, in member order), which identify the weights
+whatever their origin.
 
 ## Two-Stage Workflow
 
@@ -138,18 +175,45 @@ spatial images. Existing masks can be supplied with NumPy-compatible arrays via
 
 Data contract:
 
-- CT values must be HU.
+- CT values must be HU. A chest CT in HU contains air and lung, so when the 1st
+  percentile of the CT values is above -500 HU, the values are probably not HU
+  (for example, the rescale intercept of -1024 was not applied, or the image
+  was windowed or normalized). Such inputs are not rejected: a WARNING is
+  logged by the `thymus_quant.inputs` logger and a note is added to
+  `result.warnings`. The values checked are recorded in `ImageContext.intensity`
+  and the result metadata (`hu_p01`, `hu_p50`, `hu_p99`, `looks_like_hu`).
 - CT arrays must be 3D.
 - Masks must be 3D bool or binary 0/1 arrays.
 - CT and mask shapes must match exactly.
 - `spacing_mm` is 3 positive finite values in millimeters.
-- `spacing_mm` is normalized to Python floats and used for voxel-volume
-  calculation. It is not changed; its difference from the affine column norms
-  is recorded in the geometry report (see below).
+- `spacing_mm` (for NIfTI files, the header voxel sizes) is normalized to Python
+  floats and used for voxel-volume calculation. NIfTI files whose spatial unit
+  (`xyzt_units`) is meter or micron are converted to mm, with a note; "unknown"
+  is taken as mm. When an affine is available, each voxel size is compared with
+  the matching axis length of the affine after removing shear (QR
+  decomposition); when any differs by more than 0.1%, a WARNING is logged by the
+  `thymus_quant.inputs` logger and a note is added to `result.warnings`. Volumes
+  and ETV still use `spacing_mm`. Gantry tilt (shear of the slice axis) and
+  rotation do not cause this warning when the header gives the perpendicular
+  slice spacing. See the geometry report below.
+- Other header notes: the NIfTI orientation is unspecified
+  (`qform_code = sform_code = 0`; nibabel's fallback LAS is not used as known
+  orientation), the qform and sform disagree on left and right, the affine is
+  not usable (non-finite or singular), or the header looks like library
+  defaults (1 mm voxels, axis-aligned unit affine, origin 0, as written by
+  `nibabel.Nifti1Image(arr, np.eye(4))` or SimpleITK without copying spacing
+  and direction; this is only a hint).
+- The input notes above do not change values, `flags`, `qc.status` or
+  `qc.paper_criteria_met`. `result.warnings` is also in the `warnings` column of
+  `to_record()` / `to_frame()`.
 - External CT/mask inputs are not resampled, cropped, padded, flipped, or
   permuted. Shape mismatches raise `InputValidationError` instead of being
   repaired automatically.
-- Masked CT voxels must contain at least one finite HU value.
+- Masked CT voxels must contain at least one finite HU value. In quantification, a
+  member whose TRQ contains any non-finite CT value (NaN/inf) is not computed
+  (`computation_failed`, `nonfinite_hu`): measuring only the finite part would still
+  count the missing voxels in the volume. Non-finite CT values anywhere in the image
+  are also reported in `result.warnings` (`ImageContext.intensity["n_nonfinite"]`).
 - DICOM directories are not directly supported by the public API.
 - Current TRQseg-v1 preprocessing records input/output shapes and returns masks
   on the input grid. Inputs outside the reference preprocessing domain should be
@@ -174,6 +238,12 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
   Arrays without affine or orientation are used as given (assumed LAS).
 - LAS inputs take the same path as before, with identical results.
 - Oblique or sheared affines are not resampled. Their geometry is recorded.
+- When the orientation is unspecified (`qform_code = sform_code = 0`) or the
+  affine is not usable, the array is used as given (`assumed_model_orientation`)
+  and a note is added. An `ImageContext` built directly with an `affine` takes
+  its orientation from that affine. `make_image_context(..., orientation=...)`
+  raises `InputValidationError` when the given orientation contradicts the
+  affine.
 - The handling is recorded in `SegmentationResult.preprocessing` and in the
   result metadata: `model_orientation`, `orientation_status`
   (`model_orientation`, `reoriented`, `assumed_model_orientation`, `unresolved`),
@@ -183,9 +253,13 @@ usual result of converting DICOM with ITK/SimpleITK, or RAS after
   `thymus_quant.segmentors` logger.
 - `geometry` (in `ImageContext`, `SegmentationResult.to_dict()["image"]` and the
   result metadata) records `voxel_sizes_affine_mm`, `voxel_size_mismatch_max_mm`,
-  `obliquity_max_deg`, `shear_max`, and, for NIfTI images, `qform_code`,
-  `sform_code` and `qform_sform_max_abs_diff`. These values are reported only;
-  no thresholds are applied.
+  `voxel_sizes_affine_unsheared_mm`, `voxel_size_mismatch_rel_max`,
+  `voxel_volume_affine_mm3`, `voxel_volume_mismatch_rel`, `obliquity_max_deg`,
+  `shear_max`, `orientation_source` (`affine`, `fallback`, `explicit` or None),
+  `default_like_header`, and, for NIfTI images, `spatial_unit`,
+  `unit_scale_to_mm`, `qform_code`, `sform_code`, `qform_sform_max_abs_diff` and
+  `qform_sform_handedness_differs`. Only the notes described in the data
+  contract are derived from them.
 - The heuristic segmentor (`heuristic_trq`, debug only) is not affected.
 
 ### In-plane size
@@ -231,7 +305,47 @@ back to `heuristic_trq`.
 - `etv_ml`: summary ETV in mL.
 - `trq_volume_ml`: summary TRQ volume in mL.
 
-Okamura member fields are per-member values. Summary fields are ensemble
+### How the Okamura values are computed
+
+From 0.1.0a5, these follow the analysis code of the paper. Such results record
+`meta.method_version = "okamura_v2"`.
+
+- For each member, a Gaussian KDE (`scipy.stats.gaussian_kde`, Scott's rule) is
+  fitted to the HU values of every TRQ voxel and evaluated on fixed grids from
+  -300 to 300 HU. Peaks are the strict local maxima inside this window, so a
+  peak outside it (for example, air) is never the mode.
+- `A_TRQ` (`trq_hu_mode`) is the highest peak on a 0.1 HU grid. The paper used
+  a 1 HU grid; the 0.1 HU grid only removes up to 0.5 HU of rounding, which
+  matters for fatty TRQs because ETV is proportional to `A_TRQ + 110`.
+- The second-peak ratio (multimodality, invalid when above 0.5) and the mode
+  used for the HU value variance are taken on the 1 HU grid, as in the paper.
+- A member needs at least 2 TRQ voxels and a peak inside the window; otherwise
+  it is not computed (`computation_failed`, with `too_few_voxels` or
+  `kde_failed`).
+- The ensemble QC values are computed over all supplied members, as in the
+  paper: mean pairwise DSC (pairs of two empty masks are skipped; a member that
+  was not computed counts with its mask), mean pairwise Jensen-Shannon value
+  (pairs where both members have a KDE), and the unbiased variance of the 1 HU
+  modes (None, with `hu_variance_unavailable`, when any member has no mode).
+- The Jensen-Shannon value is the JS **distance** of
+  `scipy.spatial.distance.jensenshannon` on the 1 HU KDE curves: the square root
+  of the JS divergence with the natural logarithm. The paper calls it the JS
+  divergence, and its threshold 0.1 refers to this value. Grid points where
+  both curves are below 1e-300 are left out to avoid an infinite value from
+  floating-point underflow.
+- The criteria pass when the mean pairwise JS value is at most 0.1, the mean
+  pairwise DSC is at least 0.7 and the HU value variance is at most 20.
+
+Before 0.1.0a5 (`okamura_v1`), the mode was taken on a grid spanning the
+data's minimum to maximum, peaks outside -300..300 HU could be the mode, and the
+JS value was the base-2 JS divergence of HU values clipped to -300..300 HU,
+computed only over QC-valid members. That value is much smaller than the JS
+distance (on the paper's 31-case test set, median 0.002 and maximum 0.018
+against 0.031 and 0.094), so the JS criterion was in practice never triggered.
+
+Okamura member fields are per-member values. The `*_members` tuples have one
+entry per member, in the order of `members`; a member whose values could not be
+computed (for example, an empty mask) has None. Summary fields are ensemble
 aggregates. QC-invalid members can still retain numeric values; check
 `result.status`, `result.flags`, and `result.qc.flags` before using them.
 
@@ -245,7 +359,9 @@ Statuses are intentionally simple:
 - `not_available`: not applicable.
 
 Important flags include `invalid_member`, `all_members_invalid`,
-`used_invalid_members`, `kde_failed`, and `ensemble_qc_unavailable`.
+`used_invalid_members`, `kde_failed`, `ensemble_qc_unavailable`,
+`ensemble_qc_not_applied`, `high_jsd`, `low_dsc`, `high_hu_variance`,
+`jsd_unavailable`, and `hu_variance_unavailable`.
 
 For the Okamura method, a non-unimodal member distribution is marked invalid
 with `multimodal_or_invalid`. By default, any invalid member adds
@@ -258,6 +374,25 @@ KDE computation failure is not converted to a fake median mode. Missing spacing
 does not produce a successful result with NaN volume/ETV output. Single-member
 analysis can return quantification values, but 5-member paper ensemble criteria
 are not passed and `ensemble_qc_unavailable` is set.
+
+`qc.paper_criteria_met` is True or False only for the paper's protocol: five
+members (the TRQseg-v1 folds fold-0 to fold-4, or five supplied member masks)
+quantified with the default `OkamuraOptions`. For other ensembles (for example
+`members=[0, 1]`) or other options, the status still follows the configured
+criteria, but `paper_criteria_met` is None and `result.warnings` says why.
+
+`OkamuraOptions` rejects values that cannot give a valid result: every number
+must be finite, `athymic_hu` must be greater than `aadipose_hu`, and
+`delta_hu_margin` must be at least 0 and smaller than their difference.
+
+When a member's `A_TRQ` is above `athymic_hu` (+80 HU), its thymic tissue
+fraction is capped at 1 and a note is added to `result.warnings`. The method is
+for non-contrast chest CT; values this high suggest contrast enhancement.
+
+`OkamuraOptions(apply_qc=False)` skips the ensemble criteria (mean pairwise JS
+divergence, mean pairwise DSC, HU value variance). The three values are still
+reported in `result.qc`, but `ensemble_qc_not_applied` is set, the status is
+`check`, and `qc.paper_criteria_met` is None (not evaluated).
 
 `failed` means at least one member/mask was provided, but no computable Okamura
 value was produced. `not_available` means the method had no applicable
@@ -272,6 +407,12 @@ errors = batch.errors_to_frame()
 ```
 
 `on_error` values are `raise`, `record`, and `skip`.
+
+Inputs that fail have no row in `batch.to_frame()`, so match rows to inputs by
+the `input_index` column (the position in `paths`), not by row position.
+`input_source` is the file path for path inputs (None for in-memory images).
+`errors_to_frame()` has the same `input_index` for the failed inputs, and
+`members_to_frame()` has it for every member row.
 
 ## Coming soon: Expanded thymic composition analysis workflows.
 
