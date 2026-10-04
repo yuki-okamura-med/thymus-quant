@@ -4,28 +4,40 @@ This package lets you quantify thymic tissue contained within the thymic region
 on human CT images. It implements the framework described in Okamura YT et
 al., Ann Biomed Eng, 2025. http://dx.doi.org/10.1007/s10439-025-03805-z
 
-From version 0.1.0a4, thymus-quant checks the voxel order (orientation) of the
-input image and, when needed, reorders the voxels to the order used for training
-(LAS) before segmentation. Earlier versions used the voxel array as stored in the
-file. If your NIfTI files were not in LAS order (for example, files written by
-ITK or SimpleITK, which are usually LPS, or files reoriented to RAS), the
-segmentation with earlier versions may have been poor, and we recommend running
-those images again with 0.1.0a4 or later. You can check the voxel order of a file
-with `nibabel.aff2axcodes(nibabel.load(path).affine)`; see
+## Important changes in recent versions
+
+**0.1.0a5: QC values and A_TRQ are now computed as in the paper's analysis code.
+QC results can differ from earlier versions; we recommend re-running analyses
+done with earlier versions.** The most important change is the Jensen-Shannon
+value: it is now the JS distance that the paper's threshold of 0.1 refers to.
+Earlier versions computed a much smaller quantity, so their JS criterion was in
+practice never triggered, and studies the paper would have excluded could pass
+QC. A_TRQ and ETV change slightly (A_TRQ is now taken on a 0.1 HU grid). A bug
+that could give a wrong summary when one member could not be computed (status
+`check`) is also fixed. Results from 0.1.0a5 record
+`meta.method_version = "okamura_v2"` (earlier versions: `okamura_v1`). See
+[How the Okamura values are computed](#how-the-okamura-values-are-computed).
+
+**0.1.0a4: the voxel order (orientation) of the input is now checked. If your
+NIfTI files were not in LAS order, segmentations from earlier versions may have
+been poor.** From 0.1.0a4, thymus-quant reorders the voxels to the order used
+for training (LAS) before segmentation, when needed. Earlier versions used the
+voxel array as stored in the file. Files written by ITK or SimpleITK (usually
+LPS) or reoriented to RAS were affected; please run those images again with
+0.1.0a5. You can check the voxel order of a file with
+`nibabel.aff2axcodes(nibabel.load(path).affine)`; see
 [Voxel order (orientation)](#voxel-order-orientation) for details.
 
-From version 0.1.0a5, the QC values and A_TRQ are computed as in the paper's
-analysis code. In particular, the Jensen-Shannon value is now the JS distance
-that the paper's threshold of 0.1 refers to; earlier versions computed a much
-smaller quantity, so their JS criterion was in practice never triggered. See
-[How the Okamura values are computed](#how-the-okamura-values-are-computed-method-version-okamura_v2).
+## Intended input
 
-Intended input: TRQseg-v1 and the QC thresholds were developed on non-contrast
-axial chest CT reconstructed with a soft-tissue (standard) kernel, 512 x 512
-pixels and 1-3 mm slices (the inclusion criteria of the paper). Other CT
-(contrast-enhanced, lung or sharp kernels, thicker slices, PET/CT or radiotherapy
-planning CT) is processed, but results have not been validated; contrast
-enhancement raises A_TRQ and therefore ETV.
+**TRQseg-v1 and the QC thresholds were developed on non-contrast axial chest CT**
+reconstructed with a soft-tissue (standard) kernel, 512 x 512 pixels and 1-3 mm
+slices (the inclusion criteria of the paper). Other CT (contrast-enhanced, lung
+or sharp kernels, thicker slices, PET/CT or radiotherapy planning CT) is
+processed, but results have not been validated; contrast enhancement raises
+A_TRQ and therefore ETV.
+
+## Readouts and APIs
 
 Main readouts:
 
@@ -293,9 +305,10 @@ back to `heuristic_trq`.
 - `etv_ml`: summary ETV in mL.
 - `trq_volume_ml`: summary TRQ volume in mL.
 
-### How the Okamura values are computed (method version `okamura_v2`)
+### How the Okamura values are computed
 
-These follow the analysis code of the paper.
+From 0.1.0a5, these follow the analysis code of the paper. Such results record
+`meta.method_version = "okamura_v2"`.
 
 - For each member, a Gaussian KDE (`scipy.stats.gaussian_kde`, Scott's rule) is
   fitted to the HU values of every TRQ voxel and evaluated on fixed grids from
